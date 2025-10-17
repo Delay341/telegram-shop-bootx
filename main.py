@@ -7,7 +7,6 @@ import telebot
 from telebot.apihelper import ApiTelegramException
 
 from handlers.menu import register_handlers
-from handlers.reply import register_reply_handler
 
 
 # --- Mini HTTP server (GET + HEAD) ---
@@ -42,11 +41,11 @@ if not TOKEN:
     raise SystemExit
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
+
+# Register support reply early
+register_reply_handler(bot)
 register_handlers(bot)
 
-
-# Register support reply handlers
-register_reply_handler(bot)
 # --- Diagnostics ---
 me = bot.get_me()
 print(f"✅ getMe: @{me.username} (id={me.id})")
@@ -95,6 +94,7 @@ PROMO_FILE = os.getenv("PROMO_FILE", os.path.join(os.path.dirname(__file__), "pr
 def _load_promos():
     try:
         import json
+from handlers.reply import register_reply_handler
         if os.path.exists(PROMO_FILE):
             return json.loads(open(PROMO_FILE,'r',encoding='utf-8').read() or '{}')
     except Exception:

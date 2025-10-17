@@ -380,5 +380,10 @@
         }
       ]
     }
-  ]
+  ],
+  "pricing_multiplier": 2.0,
+  "promo": {
+    "SPRINT10": 0.9,
+    "VIP20": 0.8
+  }
 }

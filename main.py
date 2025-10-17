@@ -81,3 +81,54 @@ def run_polling_with_retry():
 
 print("✅ Бот запущен и готов к работе...")
 run_polling_with_retry()
+
+
+# --- Admin utilities ---
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ORDERS_FILE = os.getenv("ORDERS_FILE", os.path.join(os.path.dirname(__file__), "orders.json"))
+USERS_FILE = os.getenv("USERS_FILE", os.path.join(os.path.dirname(__file__), "users.json"))
+
+@bot.message_handler(commands=["orders"])
+def orders_cmd(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    import json, time
+    args = (m.text or "").split()
+    limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else 10
+    if not os.path.exists(ORDERS_FILE):
+        bot.reply_to(m, "Заказов пока нет.")
+        return
+    orders = json.loads(open(ORDERS_FILE,'r',encoding='utf-8').read() or '[]')[-limit:]
+    if not orders:
+        bot.reply_to(m, "Заказов пока нет.")
+        return
+    lines = []
+    for o in reversed(orders):
+        t = time.strftime("%Y-%m-%d %H:%M", time.localtime(o.get("ts",0)))
+        lines.append(f"#{o.get('item_id')} — {o.get('qty')} шт. — {o.get('total')} ₽ — @{o.get('username') or '-'} — {t}")
+    bot.reply_to(m, "\n".join(lines))
+
+@bot.message_handler(commands=["broadcast"])
+def broadcast_cmd(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    text = m.text.partition(" ")[2].strip()
+    if not text:
+        bot.reply_to(m, "Формат: /broadcast Текст рассылки")
+        return
+    users = []
+    try:
+        if os.path.exists(USERS_FILE):
+            import json as _json
+            users = _json.loads(open(USERS_FILE,'r',encoding='utf-8').read() or '[]')
+    except Exception:
+        pass
+    sent = 0
+    for uid in users:
+        try:
+            bot.send_message(uid, text, parse_mode="HTML")
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            pass
+    bot.reply_to(m, f"✅ Отправлено: {sent}")

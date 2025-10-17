@@ -8,6 +8,7 @@ from telebot.apihelper import ApiTelegramException
 
 from handlers.menu import register_handlers
 
+
 # --- Mini HTTP server (GET + HEAD) ---
 class _Health(BaseHTTPRequestHandler):
     def _ok(self):
@@ -24,12 +25,14 @@ class _Health(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._ok()
 
+
 # --- Run health server in background thread on $PORT (Render) ---
 PORT = int(os.environ.get("PORT", "10000"))
 threading.Thread(
     target=lambda: HTTPServer(("", PORT), _Health).serve_forever(),
     daemon=True
 ).start()
+
 
 # --- Telegram bot init ---
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")

@@ -35,6 +35,9 @@ def register_handlers(bot, config=None):
         ("cat:tg", "💎 Telegram", [c["id"] for c in config["categories"] if not c["id"].startswith(("yt_","tt_"))]),
         ("cat:yt", "❤️ YouTube", ["yt_followers","yt_likes","yt_views","yt_organic","yt_shorts"]),
         ("cat:tt", "👾 TikTok", ["tt_followers","tt_likes","tt_views","tt_live"]),
+    ] for c in config["categories"] if not c["id"].startswith(("yt_","tt_"))]),
+        ("cat:yt", "❤️ YouTube", ["yt_followers","yt_likes","yt_views","yt_organic","yt_shorts"]),
+        ("cat:tt", "👾 TikTok", ["tt_followers","tt_likes","tt_views","tt_live"]),
     ] for c in config['categories']]),
         ("cat:yt", "❤️ YouTube", []),
         ("cat:tt", "👾 TikTok", []),
@@ -152,7 +155,15 @@ def register_handlers(bot, config=None):
         bot.answer_callback_query(call.id)
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("item:"))
-    def pick_item(call):
+    
+@bot.callback_query_handler(func=lambda c: c.data == "support:ask")
+def support_ask(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, "✏️ Напишите ваш вопрос — я передам его в поддержку. Используйте /support в любой момент.")
+    st = STATE.get(call.from_user.id, {})
+    st["await_support"] = True
+    STATE[call.from_user.id] = st
+def pick_item(call):
         _, cat_id, item_id = call.data.split(":")
         cat = next((c for c in config["categories"] if c["id"] == cat_id), None)
         it = next((i for i in cat["items"] if i["id"] == item_id), None)

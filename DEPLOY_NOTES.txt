@@ -1,0 +1,4 @@
+BoostX patched: health GET/HEAD, safe polling with retries, support bridge + /reply, sections TG/YT/TT.
+Render build: pip install -r requirements.txt
+Render start: python main.py
+Env: TELEGRAM_BOT_TOKEN, ADMIN_ID, OPENAI_API_KEY (если используется)

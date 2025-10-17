@@ -198,7 +198,7 @@ def register_handlers(bot, config=None):
         bot.answer_callback_query(call.id)
         text = (f"<b>{it['title']}</b>\n"
                 f"Тариф: {money(it['price'] * PRICING_MULT)} за {unit_size}\n\n"
-                f"Введите количество (число). Желательно кратно {unit_size}.")
+                f"Введите количество (число) | Минимальный заказ 10 шт.")
         msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML")
         _autodelete(bot, call.message.chat.id, msg.message_id, 40)
 

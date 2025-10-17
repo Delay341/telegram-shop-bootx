@@ -7,6 +7,7 @@ import telebot
 from telebot.apihelper import ApiTelegramException
 
 from handlers.menu import register_handlers
+from handlers.reply import register_reply_handler
 
 
 # --- Mini HTTP server (GET + HEAD) ---
@@ -43,6 +44,9 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 register_handlers(bot)
 
+
+# Register support reply handlers
+register_reply_handler(bot)
 # --- Diagnostics ---
 me = bot.get_me()
 print(f"✅ getMe: @{me.username} (id={me.id})")

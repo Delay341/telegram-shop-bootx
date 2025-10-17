@@ -1,7 +1,7 @@
 import os
 from telebot import TeleBot, types
 from utils.notify import log_admin
-from handlers.balance import add_balance
+from .balance import add_balance
 
 PAYMENT_LINK = os.getenv("CARD_DETAILS","").strip()
 PAY_HINT = os.getenv("PAY_INSTRUCTIONS","В сообщении к переводу укажите: Ваш @username, услугу, количество")

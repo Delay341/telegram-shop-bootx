@@ -1,11 +1,21 @@
 import os, time, json
 from telebot import TeleBot
 from utils.db import fetch_one, execute, execute_with_lastrowid
-from services.supplier import add_order
+from services.supplier import add_order, get_services
 from utils.notify import log_admin
 
 PRICING_MULTIPLIER = float(os.getenv("PRICING_MULTIPLIER","2.0"))
 _stage = {}
+_services_index = None
+
+def _index_services():
+    global _services_index
+    data = get_services()
+    idx = {}
+    for s in data:
+        sid = str(s.get("service") or s.get("id") or "")
+        if sid: idx[sid] = s
+    _services_index = idx
 
 def _find_item(config, cat_id, item_id):
     for c in config.get("categories", []):
@@ -15,9 +25,23 @@ def _find_item(config, cat_id, item_id):
                     return c, it
     return None, None
 
-def _price(c, it, qty):
-    unit = c.get("unit","per_1000")
-    base = float(it.get("price",0.0))
+def _calc_price(cat, it, qty):
+    unit = cat.get("unit","per_1000")
+    base = it.get("price")
+    if base is None:
+        # try provider rate per 1000
+        ps = str(it.get("provider_service") or it.get("id"))
+        try:
+            global _services_index
+            if _services_index is None: _index_services()
+            rate = float(_services_index.get(ps,{}).get("rate", 0.0))
+            if unit=="per_1000":
+                base = rate
+            else:
+                base = rate/1000.0
+        except Exception:
+            base = 0.0
+    base = float(base or 0.0)
     if unit=="per_1000":
         return round(base * (qty/1000.0) * PRICING_MULTIPLIER, 2)
     return round(base * qty * PRICING_MULTIPLIER, 2)
@@ -44,7 +68,7 @@ def register_orders(bot: TeleBot, config: dict):
         st = _stage.get(m.from_user.id,{}); cat_id, item_id, qty = st["cat"], st["item"], st["qty"]
         cat, it = _find_item(config, cat_id, item_id)
         if not it: bot.reply_to(m, "Товар не найден."); _stage.pop(m.from_user.id, None); return
-        price = _price(cat, it, qty)
+        price = _calc_price(cat, it, qty)
         row = fetch_one("SELECT balance FROM users WHERE user_id=?", (m.from_user.id,))
         bal = float(row["balance"]) if row else 0.0
         if bal < price:
@@ -53,7 +77,7 @@ def register_orders(bot: TeleBot, config: dict):
             _stage.pop(m.from_user.id, None); return
         execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (price, m.from_user.id))
         oid = execute_with_lastrowid("INSERT INTO orders(user_id,service_id,qty,link,price,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                                     (m.from_user.id, it.get("id"), qty, link, price, "pending", int(time.time()), int(time.time())))
+                                     (m.from_user.id, it.get("provider_service") or it.get("id"), qty, link, price, "pending", int(time.time()), int(time.time())))
         try:
             service_id = it.get("provider_service") or it.get("id")
             resp = add_order(service_id, link, qty)
@@ -61,7 +85,7 @@ def register_orders(bot: TeleBot, config: dict):
             execute("UPDATE orders SET status=?, provider_order_id=?, raw_response=?, updated_at=? WHERE id=?",
                     ("sent", provider_oid, json.dumps(resp, ensure_ascii=False), int(time.time()), oid))
             bot.reply_to(m, f"✅ Заказ #{oid} создан. Списано {price:.2f} ₽. Поставщик: {provider_oid or '—'}")
-            log_admin(bot, f"🛒 Заказ #{oid}: item={it.get('id')}, qty={qty}, price={price:.2f}, provider={provider_oid}")
+            log_admin(bot, f"🛒 Заказ #{oid}: item={service_id}, qty={qty}, price={price:.2f}, provider={provider_oid}")
         except Exception as e:
             execute("UPDATE orders SET status=?, raw_response=?, updated_at=? WHERE id=?",
                     ("failed", str(e), int(time.time()), oid))

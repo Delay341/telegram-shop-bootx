@@ -1,4 +1,3 @@
-
 from telebot import TeleBot, types
 from utils.db import fetch_one
 
@@ -17,12 +16,17 @@ def register_handlers(bot: TeleBot):
 
     @bot.message_handler(commands=['start'])
     def start(m):
+        # send BoostX logo
+        try:
+            with open("assets/boostx.png","rb") as f:
+                bot.send_photo(m.chat.id, f, caption="Добро пожаловать в BoostX 🚀")
+        except Exception:
+            pass
         rows = []
         for c in cfg.get("categories", []):
             if not c.get("enabled", True):
                 continue
             rows.append([ types.InlineKeyboardButton(c['title'], callback_data=f"cat:{c['id']}") ])
-        # кнопка баланса
         rows.append([ types.InlineKeyboardButton("💰 Баланс", callback_data="balance:show") ])
         bot.send_message(m.chat.id, "Выберите категорию 👇", reply_markup=_kb(rows))
 
@@ -39,6 +43,25 @@ def register_handlers(bot: TeleBot):
         if not cat:
             bot.answer_callback_query(c.id, "Категория не найдена")
             return
+        # send category logo
+        logo_map = {
+            "tg": "assets/telegram.png",
+            "telegram": "assets/telegram.png",
+            "yt": "assets/youtube.png",
+            "youtube": "assets/youtube.png",
+            "tt": "assets/tiktok.png",
+            "tiktok": "assets/tiktok.png",
+        }
+        logo = None
+        for k,v in logo_map.items():
+            if cid.startswith(k):
+                logo = v; break
+        if logo:
+            try:
+                with open(logo, "rb") as f:
+                    bot.send_photo(c.message.chat.id, f, caption=f"{cat['title']}")
+            except Exception:
+                pass
         kb = types.InlineKeyboardMarkup()
         for it in cat.get("items", []):
             price = it.get("price","?")
@@ -48,12 +71,8 @@ def register_handlers(bot: TeleBot):
                 callback_data=f"item:{cid}:{it['id']}"
             ))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back:root"))
-        bot.edit_message_text(
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            text=f"Категория: {cat['title']}",
-            reply_markup=kb
-        )
+        bot.send_message(c.message.chat.id, "Выберите услугу:", reply_markup=kb)
+        bot.answer_callback_query(c.id)
 
     @bot.callback_query_handler(func=lambda c: c.data=="back:root")
     def back_root(c):

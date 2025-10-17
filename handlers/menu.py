@@ -32,7 +32,13 @@ def register_handlers(bot, config=None):
     SHOP_NAME = config.get("shop_name", "BoostX")
 
     SECTIONS = [
-        ("cat:subs", f"{EMOJI['subs']} Подписчики", ["subs_no_guarantee", "subs_no_unsubs"]),
+        ("cat:tg", "💎 Telegram", [c["id"] for c in config["categories"] if not c["id"].startswith(("yt_","tt_"))]),
+        ("cat:yt", "❤️ YouTube", ["yt_followers","yt_likes","yt_views","yt_organic","yt_shorts"]),
+        ("cat:tt", "👾 TikTok", ["tt_followers","tt_likes","tt_views","tt_live"]),
+    ] for c in config['categories']]),
+        ("cat:yt", "❤️ YouTube", []),
+        ("cat:tt", "👾 TikTok", []),
+    ]} Подписчики", ["subs_no_guarantee", "subs_no_unsubs"]),
         ("cat:target", f"{EMOJI['target']} Таргетированные", ["targeted_subs"]),
         ("cat:real", f"{EMOJI['real']} Реальные", ["real_subs"]),
         ("cat:views", f"{EMOJI['views']} Просмотры", ["views"]),
@@ -51,7 +57,7 @@ def register_handlers(bot, config=None):
         for code, title, _ in SECTIONS:
             kb.add(types.InlineKeyboardButton(title, callback_data=code))
         kb.add(types.InlineKeyboardButton("🧾 Как заказать", callback_data="help:new"),
-               types.InlineKeyboardButton("🆘 Поддержка", url=f"https://t.me/{SUPPORT.lstrip('@')}"))
+               types.InlineKeyboardButton("🆘 Поддержка", callback_data="support:ask"))
         return kb
 
     def build_category_menu(section_code):
@@ -176,7 +182,7 @@ def register_handlers(bot, config=None):
 
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton(f"{EMOJI['back']} Назад к категориям", callback_data=f"back:sec_of:{cat['id']}"))
-        kb.add(types.InlineKeyboardButton("🆘 Поддержка", url=f"https://t.me/{SUPPORT.lstrip('@')}"))
+        kb.add(types.InlineKeyboardButton("🆘 Поддержка", callback_data="support:ask"))
 
         text = (
             f"{EMOJI['cart']} <b>Черновик заказа</b>\n"
@@ -210,3 +216,21 @@ def register_handlers(bot, config=None):
     @bot.message_handler(content_types=["text"])
     def fallback(m):
         bot.send_message(m.chat.id, "Нажмите /start, чтобы открыть меню.")
+
+    @bot.message_handler(func=lambda m: STATE.get(m.from_user.id, {}).get('await_support') and m.content_type == 'text')
+    def _forward_support(m):
+        st = STATE.get(m.from_user.id, {})
+        st['await_support'] = False
+        STATE[m.from_user.id] = st
+        admin_id = int(os.getenv("ADMIN_ID", "0"))
+        txt = m.text.strip()
+        info = (f"📩 <b>Новый вопрос</b>\n"
+                f"От: @{m.from_user.username or '—'} (id {m.from_user.id})\n\n"
+                f"<b>Текст:</b>\n{txt}\n\n"
+                f"Ответьте /reply {m.from_user.id} ваш_текст")
+        try:
+            if admin_id:
+                bot.send_message(admin_id, info, parse_mode="HTML")
+        except Exception:
+            pass
+        bot.reply_to(m, "✅ Ваше сообщение передано в поддержку. Ответ придёт сюда.")

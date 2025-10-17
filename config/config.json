@@ -271,6 +271,114 @@
           "price": 930.0
         }
       ]
+    },
+    {
+      "id": "yt_followers",
+      "title": "YouTube Подписчики",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "yt_followers_basic",
+          "title": "YouTube Подписчики [Без гарантии]",
+          "price": 30.2
+        }
+      ]
+    },
+    {
+      "id": "yt_likes",
+      "title": "YouTube Лайки",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "yt_likes_basic",
+          "title": "YouTube Лайки [Без гарантии]",
+          "price": 22.0
+        }
+      ]
+    },
+    {
+      "id": "yt_views",
+      "title": "YouTube Просмотры",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "yt_views_basic",
+          "title": "YouTube Просмотры [Без гарантии]",
+          "price": 88.0
+        }
+      ]
+    },
+    {
+      "id": "yt_organic",
+      "title": "YouTube Органические просмотры (High Drop)",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "yt_org_hd",
+          "title": "YouTube Органические просмотры [High Drop]",
+          "price": 200.0
+        }
+      ]
+    },
+    {
+      "id": "yt_shorts",
+      "title": "YouTube Shorts (услуги)",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "yt_shorts_pack",
+          "title": "YouTube Shorts — пакет услуг",
+          "price": 120.0
+        }
+      ]
+    },
+    {
+      "id": "tt_followers",
+      "title": "TikTok Подписчики",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "tt_followers_basic",
+          "title": "TikTok Подписчики",
+          "price": 244.0
+        }
+      ]
+    },
+    {
+      "id": "tt_likes",
+      "title": "TikTok Лайки",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "tt_likes_basic",
+          "title": "TikTok Лайки",
+          "price": 50.0
+        }
+      ]
+    },
+    {
+      "id": "tt_views",
+      "title": "TikTok Просмотры",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "tt_views_basic",
+          "title": "TikTok Просмотры",
+          "price": 40.0
+        }
+      ]
+    },
+    {
+      "id": "tt_live",
+      "title": "TikTok Live Stream Зрители",
+      "unit": "per_1000",
+      "items": [
+        {
+          "id": "tt_live_basic",
+          "title": "TikTok Зрители лайв-трансляции",
+          "price": 50.0
+        }
+      ]
     }
   ]
 }

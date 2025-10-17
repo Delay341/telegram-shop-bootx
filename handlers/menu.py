@@ -63,6 +63,13 @@ def register_handlers(bot, config=None):
 
     STATE = {}
 
+    SECTION_IMAGE = {
+        "cat:tg": os.path.join(os.path.dirname(__file__), "..", "assets", "telegram.png"),
+        "cat:yt": os.path.join(os.path.dirname(__file__), "..", "assets", "youtube.png"),
+        "cat:tt": os.path.join(os.path.dirname(__file__), "..", "assets", "tiktok.png"),
+    }
+
+
     # Persistence & pricing
     USERS_FILE = os.getenv('USERS_FILE', os.path.join(os.path.dirname(__file__), '..', 'users.json'))
     ORDERS_FILE = os.getenv('ORDERS_FILE', os.path.join(os.path.dirname(__file__), '..', 'orders.json'))
@@ -109,7 +116,11 @@ def register_handlers(bot, config=None):
             "Выберите раздел ниже — бот покажет доступные категории и цены.\n"
             "Оплата вручную: после оформления заказа получите ссылку и инструкции."
         )
-        bot.send_message(chat_id, caption, reply_markup=build_sections_menu(), parse_mode="HTML")
+        try:
+            with open(os.path.join(os.path.dirname(__file__), "..", "assets", "logo.png"), "rb") as pic:
+                bot.send_photo(chat_id, pic, caption=caption, reply_markup=build_sections_menu(), parse_mode="HTML")
+        except Exception:
+            bot.send_message(chat_id, caption, reply_markup=build_sections_menu(), parse_mode="HTML")
 
     @bot.message_handler(commands=["start","menu"])
     def start(m):
@@ -142,8 +153,12 @@ def register_handlers(bot, config=None):
         _, section_title, _ = next((x for x in SECTIONS if x[0] == section_code), (section_code, section_code, []))
         kb, _cats = build_category_menu(section_code)
         try:
-            bot.edit_message_text(f"{section_title}\nВыберите категорию:", call.message.chat.id,
-                                  call.message.message_id, reply_markup=kb)
+            img = SECTION_IMAGE.get(section_code)
+            if img and os.path.exists(img):
+                with open(img, "rb") as pic:
+                    bot.send_photo(call.message.chat.id, pic, caption=f"{section_title}\nВыберите категорию:", reply_markup=kb, parse_mode="HTML")
+            else:
+                bot.send_message(call.message.chat.id, f"{section_title}\nВыберите категорию:", reply_markup=kb)
         except Exception:
             bot.send_message(call.message.chat.id, f"{section_title}\nВыберите категорию:", reply_markup=kb)
         bot.answer_callback_query(call.id)
@@ -158,7 +173,13 @@ def register_handlers(bot, config=None):
         kb = build_items_menu(cat)
         text = f"<b>{cat['title']}</b>\nВыберите услугу:"
         try:
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+            sec_code = CAT_TO_SECTION.get(cat_id, ("cat:tg",""))[0]
+            img = SECTION_IMAGE.get(sec_code)
+            if img and os.path.exists(img):
+                with open(img, "rb") as pic:
+                    bot.send_photo(call.message.chat.id, pic, caption=text, reply_markup=kb, parse_mode="HTML")
+            else:
+                bot.send_message(call.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
         except Exception:
             bot.send_message(call.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
         bot.answer_callback_query(call.id)
@@ -185,6 +206,9 @@ def register_handlers(bot, config=None):
     def quantity(m):
         st = STATE.get(m.from_user.id)
         qty = int((m.text or '').strip())
+        if qty < 10:
+            bot.reply_to(m, 'Минимальный заказ — 10. Введите количество заново.')
+            return
         st['qty'] = qty
         STATE[m.from_user.id] = st
         kb = types.InlineKeyboardMarkup()
@@ -210,14 +234,26 @@ def register_handlers(bot, config=None):
         it = next((i for i in cat["items"] if i["id"] == st["item_id"]), None)
         qty = int(st.get("qty", 0))
         unit = int(st.get("unit_size", 1000))
-        units = max(1, qty // unit + (1 if qty % unit else 0))
+        units = qty / unit
 
         # pricing with multiplier & promo
         price_base = float(it["price"]) * float(PRICING_MULT)
         promo_factor = 1.0
         promo_used = st.get("promo")
-        if promo_used and promo_used in PROMO:
-            promo_factor = float(PROMO[promo_used])
+        # merge config PROMO with file promos
+        file_promos = {}
+        try:
+            import json as _json
+            pf = os.path.join(os.path.dirname(__file__), '..', 'promos.json')
+            if os.path.exists(pf):
+                file_promos = _json.loads(open(pf,'r',encoding='utf-8').read() or '{}')
+        except Exception:
+            pass
+        all_promos = {}
+        all_promos.update(PROMO)
+        all_promos.update(file_promos)
+        if promo_used and promo_used in all_promos:
+            promo_factor = float(all_promos[promo_used])
         total = round(price_base * units * promo_factor, 2)
 
         kb = types.InlineKeyboardMarkup()

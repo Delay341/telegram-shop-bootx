@@ -83,52 +83,70 @@ print("✅ Бот запущен и готов к работе...")
 run_polling_with_retry()
 
 
-# --- Admin utilities ---
+
+# --- Promo management (admin) ---
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-ORDERS_FILE = os.getenv("ORDERS_FILE", os.path.join(os.path.dirname(__file__), "orders.json"))
-USERS_FILE = os.getenv("USERS_FILE", os.path.join(os.path.dirname(__file__), "users.json"))
+PROMO_FILE = os.getenv("PROMO_FILE", os.path.join(os.path.dirname(__file__), "promos.json"))
 
-@bot.message_handler(commands=["orders"])
-def orders_cmd(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    import json, time
-    args = (m.text or "").split()
-    limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else 10
-    if not os.path.exists(ORDERS_FILE):
-        bot.reply_to(m, "Заказов пока нет.")
-        return
-    orders = json.loads(open(ORDERS_FILE,'r',encoding='utf-8').read() or '[]')[-limit:]
-    if not orders:
-        bot.reply_to(m, "Заказов пока нет.")
-        return
-    lines = []
-    for o in reversed(orders):
-        t = time.strftime("%Y-%m-%d %H:%M", time.localtime(o.get("ts",0)))
-        lines.append(f"#{o.get('item_id')} — {o.get('qty')} шт. — {o.get('total')} ₽ — @{o.get('username') or '-'} — {t}")
-    bot.reply_to(m, "\n".join(lines))
-
-@bot.message_handler(commands=["broadcast"])
-def broadcast_cmd(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    text = m.text.partition(" ")[2].strip()
-    if not text:
-        bot.reply_to(m, "Формат: /broadcast Текст рассылки")
-        return
-    users = []
+def _load_promos():
     try:
-        if os.path.exists(USERS_FILE):
-            import json as _json
-            users = _json.loads(open(USERS_FILE,'r',encoding='utf-8').read() or '[]')
+        import json
+        if os.path.exists(PROMO_FILE):
+            return json.loads(open(PROMO_FILE,'r',encoding='utf-8').read() or '{}')
     except Exception:
         pass
-    sent = 0
-    for uid in users:
-        try:
-            bot.send_message(uid, text, parse_mode="HTML")
-            sent += 1
-            time.sleep(0.05)
-        except Exception:
-            pass
-    bot.reply_to(m, f"✅ Отправлено: {sent}")
+    return {}
+
+def _save_promos(d):
+    try:
+        import json
+        open(PROMO_FILE,'w',encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+@bot.message_handler(commands=['promo_list'])
+def promo_list(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    d = _load_promos()
+    if not d:
+        bot.reply_to(m, "Промокодов нет.")
+        return
+    lines = [f"{k}: x{v}" for k,v in d.items()]
+    bot.reply_to(m, "\n".join(lines))
+
+@bot.message_handler(commands=['promo_add'])
+def promo_add(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    # /promo_add CODE 0.85
+    parts = (m.text or '').split()
+    if len(parts) != 3:
+        bot.reply_to(m, "Формат: /promo_add CODE 0.85")
+        return
+    code, factor = parts[1].upper(), parts[2]
+    try:
+        f = float(factor)
+        d = _load_promos()
+        d[code] = f
+        _save_promos(d)
+        bot.reply_to(m, f"✅ Добавлен {code}: x{f}")
+    except Exception:
+        bot.reply_to(m, "Не удалось добавить промокод. Пример: /promo_add VIP20 0.80")
+
+@bot.message_handler(commands=['promo_del'])
+def promo_del(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    parts = (m.text or '').split()
+    if len(parts) != 2:
+        bot.reply_to(m, "Формат: /promo_del CODE")
+        return
+    code = parts[1].upper()
+    d = _load_promos()
+    if code in d:
+        del d[code]
+        _save_promos(d)
+        bot.reply_to(m, f"🗑 Удалён {code}")
+    else:
+        bot.reply_to(m, "Такого кода нет.")

@@ -6,8 +6,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import telebot
 from telebot.apihelper import ApiTelegramException
 
-from handlers.payments import register_payments
-from handlers.balance import register_balance
 from handlers.menu import register_handlers
 from handlers.reply import register_reply_handler
 
@@ -72,6 +70,3 @@ def run_polling_with_retry():
 
 print("✅ Бот запущен и готов к работе...")
 run_polling_with_retry()
-
-register_balance(bot)
-register_payments(bot)

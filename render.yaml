@@ -1,22 +1,18 @@
 services:
   - type: worker
-    name: boostx-telegram-bot
+    name: telegram-shop-bot
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python main.py"
+    startCommand: "python shop_bot.py"
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
+      - key: BOT_TOKEN
         sync: false
       - key: ADMIN_ID
-        sync: false
-      - key: ADMIN_LOG_CHAT_ID
         sync: false
       - key: CARD_DETAILS
         sync: false
       - key: PAY_INSTRUCTIONS
         sync: false
       - key: ORDERS_FILE
-        sync: false
-      - key: BALANCES_FILE
         sync: false

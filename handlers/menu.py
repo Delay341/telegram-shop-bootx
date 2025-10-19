@@ -86,6 +86,7 @@ def register_handlers(bot, config=None):
         kb = types.InlineKeyboardMarkup(row_width=2)
         for code, title, _ in SECTIONS:
             kb.add(types.InlineKeyboardButton(title, callback_data=code))
+        kb.add(types.InlineKeyboardButton("💰 Баланс", callback_data="menu:balance"))
         kb.add(types.InlineKeyboardButton("🧾 Как заказать", callback_data="help:new"),
                types.InlineKeyboardButton("🆘 Поддержка", callback_data="support:ask"))
         return kb

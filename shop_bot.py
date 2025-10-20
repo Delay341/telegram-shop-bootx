@@ -488,11 +488,23 @@ async def cancel_question(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ─────────────────────────────────────────────────────────────────────────────
 # Приложение
 # ─────────────────────────────────────────────────────────────────────────────
+from telegram.ext import ApplicationBuilder  # если уже импортировано выше — дубликат не страшен
 
+def build_application():
+    # создаём приложение PTB
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # 🔗 BoostX: регистрация баланса/оплат и поставщика
+    # регистрируем имеющиеся хэндлеры бота
+    from handlers.menu import register_handlers
+    from handlers.reply import register_reply_handler
+    register_handlers(app)
+    register_reply_handler(app)
+
+    # подключаем наш модуль баланса/оплат + LookSMM
+    from handlers.balance_pay import register_balance_handlers
     register_balance_handlers(app)
 
+    return app
 
 if __name__ == "__main__":
     application = build_application()

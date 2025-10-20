@@ -2,13 +2,16 @@
 import os, requests
 from typing import Any
 
-BASE = "https://looksmm.ru/api/v2"
+BASE = os.getenv("LOOKSMM_BASE", "https://looksmm.ru/api/v2")
 KEY = os.getenv("LOOKSMM_KEY", "").strip()
 
 def _get(url: str) -> Any:
     r = requests.get(url, timeout=30)
     r.raise_for_status()
-    return r.json()
+    try:
+        return r.json()
+    except Exception:
+        return r.text
 
 def services() -> Any:
     if not KEY:

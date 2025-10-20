@@ -1,5 +1,5 @@
 
-import os, json, threading
+import os, json, threading, time, uuid
 from pathlib import Path
 
 BALANCES_FILE = Path(os.getenv("BALANCES_FILE", "balances.json"))
@@ -19,8 +19,7 @@ def _write_json(p: Path, data):
 
 def get_balance(user_id: int) -> float:
     with _lock:
-        data = _read_json(BALANCES_FILE)
-        for row in data:
+        for row in _read_json(BALANCES_FILE):
             if row.get("user_id") == user_id:
                 return float(row.get("balance", 0))
         return 0.0
@@ -28,23 +27,19 @@ def get_balance(user_id: int) -> float:
 def set_balance(user_id: int, value: float) -> float:
     with _lock:
         data = _read_json(BALANCES_FILE)
-        found = False
         for row in data:
             if row.get("user_id") == user_id:
                 row["balance"] = float(value)
-                found = True
-                break
-        if not found:
-            data.append({"user_id": user_id, "balance": float(value)})
+                _write_json(BALANCES_FILE, data)
+                return float(value)
+        data.append({"user_id": user_id, "balance": float(value)})
         _write_json(BALANCES_FILE, data)
         return float(value)
 
 def add_balance(user_id: int, delta: float) -> float:
-    cur = get_balance(user_id)
-    return set_balance(user_id, cur + float(delta))
+    return set_balance(user_id, get_balance(user_id) + float(delta))
 
 def create_invoice(user_id: int, amount: float, note: str | None = None) -> dict:
-    import uuid, time
     inv = {
         "invoice_id": uuid.uuid4().hex,
         "user_id": user_id,

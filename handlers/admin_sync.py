@@ -25,7 +25,7 @@ async def cmd_set_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     if len(context.args) < 3:
-        await update.message.reply_text("Использование: /set_service <cat_index> <item_index> <service_id>")
+        await update.message.reply_html("Использование: <code>/set_service &lt;cat_index&gt; &lt;item_index&gt; &lt;service_id&gt;</code>")
         return
     try:
         cidx = int(context.args[0]); iidx = int(context.args[1]); sid = int(context.args[2])

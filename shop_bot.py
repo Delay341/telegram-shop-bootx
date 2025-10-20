@@ -1,11 +1,12 @@
 
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, json
+import os, json, asyncio
 from pathlib import Path
 from typing import Dict, Any
 
 from dotenv import load_dotenv
+from aiohttp import web
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -216,13 +217,34 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 from handlers.balance_pay import register_balance_handlers
 from handlers.admin_sync import register_admin_handlers
 
-# FIX: delete webhook on startup to avoid getUpdates conflict
+# Tiny HTTP server to satisfy Render (binds $PORT)
+async def _start_http_server(app_obj):
+    async def health(_request):
+        return web.Response(text="ok")
+
+    http_app = web.Application()
+    http_app.router.add_get("/", health)
+    http_app.router.add_get("/healthz", health)
+
+    port = int(os.getenv("PORT", "10000"))
+    runner = web.AppRunner(http_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 HTTP server started on 0.0.0.0:{port}")
+    app_obj.bot_data["http_runner"] = runner
+
+# Post-init: delete webhook + start HTTP
 async def _post_init(app: Application):
     try:
         await app.bot.delete_webhook(drop_pending_updates=True)
         print("✅ Webhook удалён, polling активирован.")
     except Exception as e:
         print(f"⚠️ Ошибка удаления webhook: {e}")
+    try:
+        await _start_http_server(app)
+    except Exception as e:
+        print(f"⚠️ HTTP server start error: {e}")
 
 def build_application():
     defaults = Defaults(parse_mode=ParseMode.HTML)

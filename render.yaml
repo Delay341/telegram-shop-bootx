@@ -1,27 +1,28 @@
 services:
   - type: web
-    name: telegram-shop-bootx
+    name: boostx-bot
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python shop_bot.py"
-
     envVars:
       - key: BOT_TOKEN
         sync: false
       - key: ADMIN_ID
         sync: false
-      - key: CARD_DETAILS
-        sync: false
-      - key: PAY_INSTRUCTIONS
-        sync: false
-      - key: ORDERS_FILE
-        sync: false
       - key: LOOKSMM_KEY
         sync: false
       - key: ADMIN_SECRET
         sync: false
+      - key: PAY_INSTRUCTIONS
+        sync: false
+      - key: CARD_DETAILS
+        sync: false
+      - key: ORDERS_FILE
+        sync: false
       - key: BALANCES_FILE
         sync: false
       - key: INVOICES_FILE
+        sync: false
+      - key: PAY_URL
         sync: false

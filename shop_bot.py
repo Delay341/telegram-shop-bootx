@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-BoostX Telegram Bot — версия с балансом, ручной оплатой и интеграцией LookSMM
-Работает на python-telegram-bot 21.x (и старше)
+BoostX Telegram Bot — версия с балансом, ручной оплатой и интеграцией LookSMM.
+Готово для деплоя на Render (python shop_bot.py).
 """
 
 from __future__ import annotations
@@ -15,13 +15,10 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
-    Defaults,   # ✅ добавлено
+    Defaults,
 )
 from telegram.constants import ParseMode
 
-# ─────────────────────────────────────────────────────────
-# ENV
-# ─────────────────────────────────────────────────────────
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -31,22 +28,23 @@ PAY_INSTRUCTIONS = os.getenv(
     "Переведите точную сумму на карту и отправьте номер транзакции в ответ.",
 )
 
-# ─────────────────────────────────────────────────────────
-# JSON utils
-# ─────────────────────────────────────────────────────────
-def load_json(path: str | Path, default):
+def load_products():
+    path = Path("config/config.json")
+    if not path.exists():
+        return []
     try:
-        p = Path(path)
-        if not p.exists():
-            return default
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return default
+        data = json.loads(path.read_text(encoding="utf-8"))
+        products = []
+        for category in data.get("categories", []):
+            for item in category.get("items", []):
+                name = item.get("title") or item.get("name") or "—"
+                price = item.get("price", "—")
+                products.append({"name": name, "price": price})
+        return products
+    except Exception as e:
+        print("Ошибка загрузки каталога:", e)
+        return []
 
-
-# ─────────────────────────────────────────────────────────
-# Handlers (basic)
-# ─────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Добро пожаловать в <b>BoostX</b>!\n\n"
@@ -59,11 +57,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💳 Баланс", callback_data="balance")],
         ]
     )
-    await update.message.reply_html(text, reply_markup=kb)
-
+    if update.message:
+        await update.message.reply_html(text, reply_markup=kb)
+    elif update.callback_query:
+        await update.callback_query.message.reply_html(text, reply_markup=kb)
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    products = load_json("config/products.json", [])
+    products = load_products()
     if not products:
         await update.callback_query.message.reply_text("Каталог временно пуст.")
         return
@@ -75,48 +75,29 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"💎 {name} — <b>{price}₽</b>\n"
     await update.callback_query.message.reply_html(msg)
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📘 Команды:\n"
         "/start — приветствие\n"
         "/catalog — каталог услуг (кнопка «Каталог»)\n"
         "/balance — баланс\n"
-        "/topup <сумма> — пополнить баланс\n"
+        "/topup &lt;сумма&gt; — пополнить баланс\n"
         "/services — список услуг LookSMM\n"
-        "/buy <id> <ссылка> <кол-во> — заказать услугу у поставщика\n"
-        "/confirm_payment <invoice_id> — подтверждение оплаты (админ)\n"
+        "/buy &lt;id&gt; &lt;ссылка&gt; &lt;кол-во&gt; — заказать услугу у поставщика\n"
+        "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)\n"
     )
 
-
-# ─────────────────────────────────────────────────────────
-# Balance + LookSMM
-# ─────────────────────────────────────────────────────────
 from handlers.balance_pay import register_balance_handlers
 
-
-# ─────────────────────────────────────────────────────────
-# App builder
-# ─────────────────────────────────────────────────────────
 def build_application():
-    # ✅ корректная версия с Defaults(parse_mode=HTML)
     defaults = Defaults(parse_mode=ParseMode.HTML)
     app = ApplicationBuilder().token(BOT_TOKEN).defaults(defaults).build()
-
-    # базовые команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog$"))
-
-    # баланс/оплата/LookSMM
     register_balance_handlers(app)
-
     return app
 
-
-# ─────────────────────────────────────────────────────────
-# Entry
-# ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     application = build_application()
     print("Bot is running...")

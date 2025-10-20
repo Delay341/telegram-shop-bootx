@@ -1,11 +1,11 @@
 
 services:
   - type: web
-    name: boostx-looks-sync
+    name: telegram-shop-boostx
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python shop_bot.py"
+    startCommand: "bash -lc 'python sync_gist.py & python shop_bot.py'"
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -13,5 +13,17 @@ services:
         sync: false
       - key: LOOKSMM_KEY
         sync: false
-      - key: PAY_URL
+      - key: PAY_INSTRUCTIONS
         sync: false
+      - key: ORDERS_FILE
+        sync: false
+      - key: BALANCES_FILE
+        value: balances.json
+      - key: INVOICES_FILE
+        sync: false
+      - key: GIST_ID
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GIST_SYNC_INTERVAL
+        value: "20"

@@ -1,7 +1,7 @@
 
 services:
   - type: web
-    name: boostx-bot
+    name: boostx-looks-sync
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"

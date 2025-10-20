@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 BoostX Telegram Bot — версия с балансом, ручной оплатой и интеграцией LookSMM
-Работает на python-telegram-bot 21.x (и близких версиях).
+Работает на python-telegram-bot 21.x (и старше)
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
+    Defaults,   # ✅ добавлено
 )
 from telegram.constants import ParseMode
 
@@ -98,9 +99,9 @@ from handlers.balance_pay import register_balance_handlers
 # App builder
 # ─────────────────────────────────────────────────────────
 def build_application():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    # Универсальная установка parse_mode на любых минорных версиях PTB:
-    app.bot._parse_mode = ParseMode.HTML  # noqa: SLF001
+    # ✅ корректная версия с Defaults(parse_mode=HTML)
+    defaults = Defaults(parse_mode=ParseMode.HTML)
+    app = ApplicationBuilder().token(BOT_TOKEN).defaults(defaults).build()
 
     # базовые команды
     app.add_handler(CommandHandler("start", start))

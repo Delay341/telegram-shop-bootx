@@ -491,7 +491,7 @@ async def cancel_question(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
     # 🔗 BoostX: регистрация баланса/оплат и поставщика
-    register_balance_handlers(app)\2
+    register_balance_handlers(app)
 
 
 if __name__ == "__main__":

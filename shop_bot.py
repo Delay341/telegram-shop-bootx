@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, Defaults,
-    ConversationHandler, MessageHandler, filters
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes,
+    Defaults, ConversationHandler, MessageHandler, filters, Application
 )
 
 load_dotenv()
@@ -56,8 +56,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "📘 Команды:<br>"
         "/start — приветствие<br>"
-        "/catalog — каталог услуг (или кнопка «Каталог»)<br>"
-        "/services — то же, что /catalog<br>"
+        "/catalog — каталог услуг<br>"
         "/balance — баланс<br>"
         "/topup &lt;сумма&gt; — пополнить баланс<br>"
         "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)<br>"
@@ -68,21 +67,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_catalog()
     await update.message.reply_text(
-        "🤖 Debug:\n"
-        f"Categories: {len(data.get('categories', []))}\n"
-        f"Multiplier: {data.get('pricing_multiplier', 1.0)}"
+        f"🤖 Debug:\nCategories: {len(data.get('categories', []))}\nMultiplier: {data.get('pricing_multiplier', 1.0)}"
     )
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query: await query.answer()
+    if query:
+        await query.answer()
     data = load_catalog()
     cats = data.get("categories", [])
     if not cats:
         target = query.message if query else update.message
         await target.reply_text("Каталог временно пуст.")
         return
-    buttons = [[InlineKeyboardButton(c.get("title","Категория"), callback_data=f"cat_{i}")]
+    buttons = [[InlineKeyboardButton(c.get("title", "Категория"), callback_data=f"cat_{i}")]
                for i, c in enumerate(cats)]
     kb = InlineKeyboardMarkup(buttons)
     target = query.message if query else update.message
@@ -110,7 +108,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = []
     for i, item in enumerate(items):
         price = _format_price(item.get("price", 0), unit, mult)
-        label = f"{item.get('title','Услуга')} — {price}"
+        label = f"{item.get('title', 'Услуга')} — {price}"
         rows.append([InlineKeyboardButton(label[:64], callback_data=f"item_{idx}_{i}")])
     rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="catalog")])
 
@@ -135,11 +133,11 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"] = {
         "cat_idx": cat_idx,
         "item_idx": item_idx,
-        "cat_title": cat.get("title","Категория"),
-        "unit": cat.get("unit","per_1000"),
-        "mult": float(data.get("pricing_multiplier",1.0)),
-        "title": item.get("title","Услуга"),
-        "price": float(item.get("price",0)),
+        "cat_title": cat.get("title", "Категория"),
+        "unit": cat.get("unit", "per_1000"),
+        "mult": float(data.get("pricing_multiplier", 1.0)),
+        "title": item.get("title", "Услуга"),
+        "price": float(item.get("price", 0)),
         "service_id": item.get("service_id"),
     }
     await query.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
@@ -169,19 +167,17 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return QTY
 
     info = context.user_data.get("order", {})
-    # пытаемся найти service_id через карту соответствий
-    sid = resolve_service_id(info.get("cat_title","Категория"), info.get("title","Услуга"), info.get("service_id"))
+    sid = resolve_service_id(info.get("cat_title", "Категория"), info.get("title", "Услуга"), info.get("service_id"))
     if not sid:
-        await update.message.reply_text("Эта позиция ещё не привязана к поставщику. Админу нужно выполнить /sync_services или /set_service.")
+        await update.message.reply_text("Эта позиция ещё не привязана к поставщику. Выполните /sync_services или /set_service.")
         return ConversationHandler.END
 
     cost = compute_cost(price=info["price"], unit=info["unit"], mult=info["mult"], qty=qty)
-
     uid = update.effective_user.id
     bal = get_balance(uid)
     if bal < cost:
         await update.message.reply_text(
-            f"Недостаточно средств. Нужно ~{cost:.2f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup &lt;сумма&gt;"
+            f"Недостаточно средств. Нужно {cost:.2f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup <сумма>"
         )
         return ConversationHandler.END
 
@@ -220,9 +216,23 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 from handlers.balance_pay import register_balance_handlers
 from handlers.admin_sync import register_admin_handlers
 
+# FIX: delete webhook on startup to avoid getUpdates conflict
+async def _post_init(app: Application):
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        print("✅ Webhook удалён, polling активирован.")
+    except Exception as e:
+        print(f"⚠️ Ошибка удаления webhook: {e}")
+
 def build_application():
     defaults = Defaults(parse_mode=ParseMode.HTML)
-    app = ApplicationBuilder().token(BOT_TOKEN).defaults(defaults).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .defaults(defaults)
+        .post_init(_post_init)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -250,5 +260,5 @@ def build_application():
 
 if __name__ == "__main__":
     application = build_application()
-    print("Bot is running...")
+    print("🚀 Bot is running...")
     application.run_polling()

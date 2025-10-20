@@ -1,12 +1,10 @@
 
-import difflib, asyncio
+import difflib, asyncio, os, json
+from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from boostx_ext.looksmm import services
 from boostx_ext.mapper import load_map, save_map, title_key, norm
-
-import os, json
-from pathlib import Path
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 CATALOG_PATH = Path("config/config.json")
@@ -21,7 +19,7 @@ async def cmd_show_map(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     m = load_map()
     text = "\n".join([f"- {k} -> {v}" for k, v in m.items()]) or "Пока пусто."
-    await update.message.reply_text(f"Текущая карта соответствий (первые 50):\n" + "\n".join(text.splitlines()[:50]))
+    await update.message.reply_text("Текущая карта соответствий (первые 50):\n" + "\n".join(text.splitlines()[:50]))
 
 async def cmd_set_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -44,30 +42,24 @@ async def cmd_sync_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     await update.message.reply_text("⏳ Синхронизирую список услуг с LookSMM...")
-    raw = await asyncio.to_thread(services)  # запрос к API в thread
-    # raw должен быть списком словарей [{'service': 1, 'name': '...'}, ...]
+    raw = await asyncio.to_thread(services)
     if not isinstance(raw, list):
         await update.message.reply_text("Неожиданный формат ответа поставщика.")
         return
-
-    # Построим справочник name->id
     provider = [(str(it.get("service") or it.get("id")), str(it.get("name") or it.get("title") or "")) for it in raw]
-    # Нормализованные для поиска
     norm_list = [(sid, norm(name)) for sid, name in provider]
 
     data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
     m = load_map()
     created = 0
-    for cat in data.get("categories", []):
+    for ci, cat in enumerate(data.get("categories", [])):
         ctitle = cat.get("title", "")
-        for item in cat.get("items", []):
+        for ii, item in enumerate(cat.get("items", [])):
             if item.get("service_id"):
-                # уже есть, пропустим
                 continue
             key = title_key(ctitle, item.get("title", ""))
             if key in m:
                 continue
-            # Поиск лучшего совпадения по нормализованным названиям
             query = norm(item.get("title",""))
             best_sid, best_score = None, 0.0
             for sid, nm in norm_list:

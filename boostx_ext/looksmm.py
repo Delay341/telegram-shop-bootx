@@ -1,6 +1,6 @@
 
 import os, requests
-from typing import Any, List, Dict
+from typing import Any
 
 BASE = os.getenv("LOOKSMM_BASE", "https://looksmm.ru/api/v2")
 KEY = os.getenv("LOOKSMM_KEY", "").strip()

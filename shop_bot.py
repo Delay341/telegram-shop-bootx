@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, json
@@ -17,7 +18,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 CATALOG_PATH = Path("config/config.json")
 
-
 def load_catalog() -> Dict[str, Any]:
     if not CATALOG_PATH.exists():
         return {"pricing_multiplier": 1.0, "categories": []}
@@ -30,12 +30,10 @@ def load_catalog() -> Dict[str, Any]:
         print("Ошибка загрузки каталога:", e)
         return {"pricing_multiplier": 1.0, "categories": []}
 
-
 def _format_price(price: float, unit: str, mult: float) -> str:
     p = float(price) * float(mult)
     tail = "за 1000" if unit == "per_1000" else "за 100"
     return f"{p:.2f} ₽ {tail}"
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -54,7 +52,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.callback_query:
         await update.callback_query.message.reply_html(text, reply_markup=kb)
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(
         "📘 Команды:<br>"
@@ -64,31 +61,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/balance — баланс<br>"
         "/topup &lt;сумма&gt; — пополнить баланс<br>"
         "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)<br>"
-        "/ping — проверка ответа бота<br>"
-        "/debug — сведения о сборке/каталоге"
+        "/sync_services — авто-сопоставление услуг (админ)<br>"
+        "/set_service c i id — ручное сопоставление (админ)<br>"
     )
-
-
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("pong")
-
 
 async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok_token = bool(BOT_TOKEN and len(BOT_TOKEN) > 20)
-    cat = load_catalog()
+    data = load_catalog()
     await update.message.reply_text(
         "🤖 Debug:\n"
-        f"Token set: {ok_token}\n"
-        f"Products file: {'exists' if CATALOG_PATH.exists() else 'missing'}\n"
-        f"Categories: {len(cat.get('categories', []))}\n"
-        f"Multiplier: {cat.get('pricing_multiplier', 1.0)}"
+        f"Categories: {len(data.get('categories', []))}\n"
+        f"Multiplier: {data.get('pricing_multiplier', 1.0)}"
     )
-
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query:
-        await query.answer()
+    if query: await query.answer()
     data = load_catalog()
     cats = data.get("categories", [])
     if not cats:
@@ -100,7 +87,6 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup(buttons)
     target = query.message if query else update.message
     await target.reply_html("<b>📋 Каталог BoostX</b>\n\nВыберите категорию:", reply_markup=kb)
-
 
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -130,9 +116,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.message.reply_html(f"<b>{title}</b>\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows))
 
-
 LINK, QTY = range(2)
-
 
 async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -151,6 +135,7 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"] = {
         "cat_idx": cat_idx,
         "item_idx": item_idx,
+        "cat_title": cat.get("title","Категория"),
         "unit": cat.get("unit","per_1000"),
         "mult": float(data.get("pricing_multiplier",1.0)),
         "title": item.get("title","Услуга"),
@@ -159,7 +144,6 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await query.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
     return LINK
-
 
 async def order_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = (update.message.text or "").strip()
@@ -170,10 +154,9 @@ async def order_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔢 Укажите количество (целое число):")
     return QTY
 
-
 async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from boostx_ext.balance import get_balance, set_balance
-    from handlers.order_looksmm import create_looksmm_order, compute_cost
+    from handlers.order_looksmm import create_looksmm_order, compute_cost, resolve_service_id
 
     txt = (update.message.text or "").strip()
     if not txt.isdigit():
@@ -186,9 +169,10 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return QTY
 
     info = context.user_data.get("order", {})
-    service_id = info.get("service_id")
-    if not service_id:
-        await update.message.reply_text("Эта позиция пока не поддерживает авто-заказ. Сообщи администратору.")
+    # пытаемся найти service_id через карту соответствий
+    sid = resolve_service_id(info.get("cat_title","Категория"), info.get("title","Услуга"), info.get("service_id"))
+    if not sid:
+        await update.message.reply_text("Эта позиция ещё не привязана к поставщику. Админу нужно выполнить /sync_services или /set_service.")
         return ConversationHandler.END
 
     cost = compute_cost(price=info["price"], unit=info["unit"], mult=info["mult"], qty=qty)
@@ -204,13 +188,13 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_balance(uid, bal - cost)
 
     try:
-        resp = await create_looksmm_order(service_id=service_id, link=info["link"], qty=qty)
+        resp = await create_looksmm_order(service_id=int(sid), link=info["link"], qty=qty)
         order_id = resp
         from boostx_ext.orders import append_order
         append_order({
             "user_id": uid,
             "title": info["title"],
-            "service_id": service_id,
+            "service_id": int(sid),
             "link": info["link"],
             "qty": qty,
             "cost": float(f"{cost:.2f}"),
@@ -228,14 +212,13 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("order", None)
     return ConversationHandler.END
 
-
 async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("order", None)
     await update.message.reply_text("Оформление отменено.")
     return ConversationHandler.END
 
-
 from handlers.balance_pay import register_balance_handlers
+from handlers.admin_sync import register_admin_handlers
 
 def build_application():
     defaults = Defaults(parse_mode=ParseMode.HTML)
@@ -243,7 +226,6 @@ def build_application():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("debug", debug))
     app.add_handler(CommandHandler("catalog", show_catalog))
     app.add_handler(CommandHandler("services", show_catalog))
@@ -263,8 +245,8 @@ def build_application():
     app.add_handler(conv)
 
     register_balance_handlers(app)
+    register_admin_handlers(app)
     return app
-
 
 if __name__ == "__main__":
     application = build_application()

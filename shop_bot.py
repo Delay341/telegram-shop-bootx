@@ -16,7 +16,6 @@ from telegram.ext import (
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
 CATALOG_PATH = Path("config/config.json")
 
 def load_catalog() -> Dict[str, Any]:
@@ -54,16 +53,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.message.reply_html(text, reply_markup=kb)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_html(
-        "📘 Команды:<br>"
-        "/start — приветствие<br>"
-        "/catalog — каталог услуг<br>"
-        "/balance — баланс<br>"
-        "/topup &lt;сумма&gt; — пополнить баланс<br>"
-        "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)<br>"
-        "/sync_services — авто-сопоставление услуг (админ)<br>"
-        "/set_service c i id — ручное сопоставление (админ)<br>"
+    text = (
+        "📘 Команды:\n"
+        "/start — приветствие\n"
+        "/catalog — каталог услуг\n"
+        "/balance — баланс\n"
+        "/topup &lt;сумма&gt; — пополнить баланс\n"
+        "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)\n"
+        "/sync_services [threshold] — авто-сопоставление услуг (админ)\n"
+        "/set_service c i id — ручное сопоставление (админ)\n"
+        "/show_map [all] — показать карту соответствий\n"
+        "/show_unmapped — позиции без привязки\n"
     )
+    await update.message.reply_html(text)
 
 async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_catalog()
@@ -214,18 +216,24 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Оформление отменено.")
     return ConversationHandler.END
 
+# balance button callback
+from boostx_ext.balance import get_balance as _get_bal
+async def balance_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    bal = _get_bal(uid)
+    await q.message.reply_html(f"💳 <b>Ваш баланс:</b> <code>{bal:.2f} ₽</code>")
+
 from handlers.balance_pay import register_balance_handlers
 from handlers.admin_sync import register_admin_handlers
 
-# Tiny HTTP server to satisfy Render (binds $PORT)
 async def _start_http_server(app_obj):
     async def health(_request):
         return web.Response(text="ok")
-
     http_app = web.Application()
     http_app.router.add_get("/", health)
     http_app.router.add_get("/healthz", health)
-
     port = int(os.getenv("PORT", "10000"))
     runner = web.AppRunner(http_app)
     await runner.setup()
@@ -234,7 +242,6 @@ async def _start_http_server(app_obj):
     print(f"🌐 HTTP server started on 0.0.0.0:{port}")
     app_obj.bot_data["http_runner"] = runner
 
-# Post-init: delete webhook + start HTTP
 async def _post_init(app: Application):
     try:
         await app.bot.delete_webhook(drop_pending_updates=True)
@@ -255,7 +262,6 @@ def build_application():
         .post_init(_post_init)
         .build()
     )
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("debug", debug))
@@ -263,6 +269,7 @@ def build_application():
     app.add_handler(CommandHandler("services", show_catalog))
     app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog$"))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
+    app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
 
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
@@ -283,4 +290,4 @@ def build_application():
 if __name__ == "__main__":
     application = build_application()
     print("🚀 Bot is running...")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)

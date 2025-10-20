@@ -12,17 +12,5 @@ services:
         sync: false
       - key: LOOKSMM_KEY
         sync: false
-      - key: ADMIN_SECRET
-        sync: false
-      - key: PAY_INSTRUCTIONS
-        sync: false
-      - key: CARD_DETAILS
-        sync: false
-      - key: ORDERS_FILE
-        sync: false
-      - key: BALANCES_FILE
-        sync: false
-      - key: INVOICES_FILE
-        sync: false
       - key: PAY_URL
         sync: false

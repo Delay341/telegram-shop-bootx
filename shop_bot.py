@@ -8,12 +8,13 @@ from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes, Defaults, ConversationHandler, MessageHandler, filters
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, Defaults,
+    ConversationHandler, MessageHandler, filters
 )
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
 CATALOG_PATH = Path("config/config.json")
 
 
@@ -42,10 +43,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Нажмите «Каталог», чтобы выбрать услугу и оформить заказ.\n"
         "Команды: /catalog, /services, /balance, /topup, /help"
     )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
-        [InlineKeyboardButton("💳 Баланс", callback_data="balance")],
-    ])
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
+            [InlineKeyboardButton("💳 Баланс", callback_data="balance")],
+        ]
+    )
     if update.message:
         await update.message.reply_html(text, reply_markup=kb)
     elif update.callback_query:
@@ -53,16 +56,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📘 Команды:\n"
-        "/start — приветствие\n"
-        "/catalog — каталог услуг (или кнопка «Каталог»)\n"
-        "/services — то же, что /catalog\n"
-        "/balance — баланс\n"
-        "/topup <сумма> — пополнить баланс\n"
-        "/confirm_payment <invoice_id> — подтверждение оплаты (админ)\n"
-        "/ping — проверка ответа бота\n"
-        "/debug — сведения о сборке/каталоге\n"
+    await update.message.reply_html(
+        "📘 Команды:<br>"
+        "/start — приветствие<br>"
+        "/catalog — каталог услуг (или кнопка «Каталог»)<br>"
+        "/services — то же, что /catalog<br>"
+        "/balance — баланс<br>"
+        "/topup &lt;сумма&gt; — пополнить баланс<br>"
+        "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)<br>"
+        "/ping — проверка ответа бота<br>"
+        "/debug — сведения о сборке/каталоге"
     )
 
 
@@ -92,11 +95,8 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = query.message if query else update.message
         await target.reply_text("Каталог временно пуст.")
         return
-
-    buttons = [
-        [InlineKeyboardButton(c.get("title", "Категория"), callback_data=f"cat_{i}")]
-        for i, _ in enumerate(cats)
-    ]
+    buttons = [[InlineKeyboardButton(c.get("title","Категория"), callback_data=f"cat_{i}")]
+               for i, c in enumerate(cats)]
     kb = InlineKeyboardMarkup(buttons)
     target = query.message if query else update.message
     await target.reply_html("<b>📋 Каталог BoostX</b>\n\nВыберите категорию:", reply_markup=kb)
@@ -128,9 +128,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton(label[:64], callback_data=f"item_{idx}_{i}")])
     rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="catalog")])
 
-    await query.message.reply_html(
-        f"<b>{title}</b>\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows)
-    )
+    await query.message.reply_html(f"<b>{title}</b>\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows))
 
 
 LINK, QTY = range(2)
@@ -153,10 +151,10 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"] = {
         "cat_idx": cat_idx,
         "item_idx": item_idx,
-        "unit": cat.get("unit", "per_1000"),
-        "mult": float(data.get("pricing_multiplier", 1.0)),
-        "title": item.get("title", "Услуга"),
-        "price": float(item.get("price", 0)),
+        "unit": cat.get("unit","per_1000"),
+        "mult": float(data.get("pricing_multiplier",1.0)),
+        "title": item.get("title","Услуга"),
+        "price": float(item.get("price",0)),
         "service_id": item.get("service_id"),
     }
     await query.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
@@ -199,8 +197,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(uid)
     if bal < cost:
         await update.message.reply_text(
-            f"Недостаточно средств. Нужно ~{cost:.2f} ₽, на балансе {bal:.2f} ₽.\n"
-            f"Пополнить: /topup <сумма>"
+            f"Недостаточно средств. Нужно ~{cost:.2f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup &lt;сумма&gt;"
         )
         return ConversationHandler.END
 
@@ -239,7 +236,6 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 from handlers.balance_pay import register_balance_handlers
-
 
 def build_application():
     defaults = Defaults(parse_mode=ParseMode.HTML)

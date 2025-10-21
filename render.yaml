@@ -1,11 +1,10 @@
-
 services:
   - type: web
     name: telegram-shop-boostx
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "bash -lc 'python sync_gist.py & python shop_bot.py'"
+    startCommand: "bash -lc 'python health_server.py & python sync_gist.py & python shop_bot.py'"
     envVars:
       - key: BOT_TOKEN
         sync: false

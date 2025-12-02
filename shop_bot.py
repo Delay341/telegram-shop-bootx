@@ -138,7 +138,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Добро пожаловать в <b>BoostX</b>!\n\n"
         "Нажмите «Каталог», чтобы выбрать услугу и оформить заказ.\n"
-        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, пополнить счёт или обратиться в поддержку.\n"
+        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, "
+        "пополнить счёт или обратиться в поддержку.\n\n"
         "Команды: /catalog, /services, /balance, /topup, /help"
     )
     kb = InlineKeyboardMarkup([
@@ -152,7 +153,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_html(text, reply_markup=kb)
     elif update.callback_query:
-        await update.callback_query.message.reply_html(text, reply_markup=kb)
+        q = update.callback_query
+        await q.message.reply_html(text, reply_markup=kb)
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📘 Команды:\n"
@@ -172,7 +174,11 @@ async def balance_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    await q.message.reply_html(f"💳 <b>Ваш баланс:</b> <code>{get_balance(uid):.2f} ₽</code>")
+    text = f"💳 <b>Ваш баланс:</b> <code>{get_balance(uid):.2f} ₽</code>"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Пополнить баланс", callback_data="topup")]
+    ])
+    await q.message.reply_html(text, reply_markup=kb)
 
 async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
@@ -416,7 +422,6 @@ async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
-        target = query.message
     else:
         target = update.message
     kb = InlineKeyboardMarkup([

@@ -138,8 +138,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Добро пожаловать в <b>BoostX</b>!\n\n"
         "Нажмите «Каталог», чтобы выбрать услугу и оформить заказ.\n"
-        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, "
-        "пополнить счёт или обратиться в поддержку.\n\n"
+        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, пополнить счёт или обратиться в поддержку.\n"
         "Команды: /catalog, /services, /balance, /topup, /help"
     )
     kb = InlineKeyboardMarkup([
@@ -153,8 +152,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_html(text, reply_markup=kb)
     elif update.callback_query:
-        q = update.callback_query
-        await q.message.reply_html(text, reply_markup=kb)
+        await update.callback_query.message.reply_html(text, reply_markup=kb)
+ry.message.reply_html(text, reply_markup=kb)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -215,7 +214,6 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик /catalog и callback 'catalog' — показывает выбор платформ."""
     await show_platforms(update, context)
-
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     data = load_catalog(); cats = data.get("categories", [])
@@ -433,165 +431,50 @@ async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb,
     )
 
+
 async def show_platform_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает категории, отфильтрованные по выбранной платформе."""
     q = update.callback_query
     await q.answer()
-    data = load_catalog()
-    cats = data.get("categories", [])
+
     try:
         _, platform = q.data.split("_", 1)
     except Exception:
         platform = "Telegram"
-    platform = platform or "Telegram"
+    platform = (platform or "Telegram").strip()
+
+    data = load_catalog()
+    cats = data.get("categories", [])
 
     filtered = []
     for idx, cat in enumerate(cats):
-        if detect_platform_for_category(cat) == platform:
-            filtered.append((idx, cat))
+        title = (cat.get("title") or "").lower()
+        items_text = " ".join((it.get("title") or "").lower() for it in cat.get("items", []))
+        combo = title + " " + items_text
+
+        if platform == "Telegram":
+            if "telegram" in combo and "youtube" not in combo and "tiktok" not in combo and "tik tok" not in combo:
+                filtered.append((idx, cat))
+        elif platform == "YouTube":
+            if "youtube" in combo or "yt " in combo:
+                filtered.append((idx, cat))
+        elif platform == "TikTok":
+            if "tiktok" in combo or "tik tok" in combo or "tt " in combo:
+                filtered.append((idx, cat))
 
     if not filtered:
-        await q.message.reply_text("Для выбранной платформы пока нет услуг.")
+        await q.message.edit_text("Для выбранной платформы пока нет услуг.")
         return
 
     buttons = [
-        [InlineKeyboardButton(cat.get("title", "Категория"), callback_data=f"cat_{idx}")]
+        [InlineKeyboardButton(cat.get("title","Категория"), callback_data=f"cat_{idx}")]
         for idx, cat in filtered
     ]
     buttons.append([InlineKeyboardButton("⬅️ Назад к выбору платформы", callback_data="catalog")])
     kb = InlineKeyboardMarkup(buttons)
+
     await q.message.edit_html(
         f"<b>Категории — {platform}</b>\nВыберите категорию:",
         reply_markup=kb,
     )
 
 
-# Поддержка и ответы админа
-SUPPORT_STATE = 10
-
-async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    text = (
-        "🆘 <b>Поддержка BoostX</b>\n\n"
-        "Опишите, пожалуйста, ваш вопрос одним сообщением. Я передам его администратору, "
-        "и ответ придёт сюда же.\n\n"
-        "Чтобы отменить, отправьте /cancel."
-    )
-    await q.message.reply_html(text)
-    return SUPPORT_STATE
-
-
-async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg_text = (update.message.text or "").strip()
-    if not msg_text:
-        await update.message.reply_text("Сообщение пустое. Отправьте, пожалуйста, текст вопроса.")
-        return SUPPORT_STATE
-
-    # Пересылаем вопрос администратору
-    header = (
-        "❓ <b>Новое обращение в поддержку</b>\n\n"
-        f"От: @{user.username or 'без username'} (ID: <code>{user.id}</code>)\n\n"
-        f"{msg_text}\n\n"
-        f"Для ответа используйте: <code>/reply {user.id} &lt;текст ответа&gt;</code>"
-    )
-    try:
-        if ADMIN_ID:
-            await context.bot.send_message(ADMIN_ID, header, parse_mode=ParseMode.HTML)
-    except Exception:
-        # Не падаем, если админ недоступен
-        pass
-
-    await update.message.reply_text(
-        "Ваше сообщение отправлено в поддержку. Ответ придёт в этот чат, как только администратор его напишет."
-    )
-    return ConversationHandler.END
-
-
-async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Обращение в поддержку отменено.")
-    return ConversationHandler.END
-
-
-async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для администраторов: /reply user_id текст"""
-    if update.effective_user.id != ADMIN_ID:
-        # тихо игнорируем, чтобы не светить админские команды
-        return
-    args = context.args or []
-    if len(args) < 2:
-        await update.message.reply_text("Использование: /reply [user_id] [сообщение]")
-        return
-    try:
-        target_id = int(args[0])
-    except Exception:
-        await update.message.reply_text("Неверный user_id.")
-        return
-    text = " ".join(args[1:])
-    try:
-        await context.bot.send_message(target_id, f"💬 Ответ от поддержки BoostX:\n\n{text}")
-        await update.message.reply_text("Ответ отправлен пользователю.")
-    except Exception:
-        await update.message.reply_text(
-            "Не удалось отправить сообщение пользователю. Возможно, он не писал боту или заблокировал его."
-        )
-
-def build_application():
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .defaults(Defaults(parse_mode=ParseMode.HTML))
-        .post_init(_post_init)
-        .build()
-    )
-    # Команды
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("balance", balance_cmd))
-    app.add_handler(CommandHandler("topup", topup_cmd))
-    app.add_handler(CommandHandler("confirm_payment", confirm_payment_cmd))
-    app.add_handler(CommandHandler("reply", reply_cmd))
-
-    # Каталог / услуги
-    app.add_handler(CommandHandler("catalog", show_catalog))
-    app.add_handler(CommandHandler("services", show_catalog))
-    app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog"))
-    app.add_handler(CallbackQueryHandler(show_platform_categories, pattern="^platform_"))
-    app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
-    app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
-    app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
-
-    # Оформление заказов
-    conv_order = ConversationHandler(
-        entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
-        states={
-            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_link)],
-            1: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_qty)],
-        },
-        fallbacks=[CommandHandler("cancel", order_cancel)],
-        name="order_conv",
-        persistent=False,
-    )
-    app.add_handler(conv_order)
-
-    # Поддержка
-    conv_support = ConversationHandler(
-        entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
-        states={
-            SUPPORT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_collect)],
-        },
-        fallbacks=[CommandHandler("cancel", support_cancel)],
-        name="support_conv",
-        persistent=False,
-    )
-    app.add_handler(conv_support)
-
-    return app
-
-if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN is not set")
-    print("🚀 Bot is running...")
-    application = build_application()
-    application.run_polling(drop_pending_updates=True)

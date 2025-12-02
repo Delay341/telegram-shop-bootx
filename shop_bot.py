@@ -138,8 +138,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Добро пожаловать в <b>BoostX</b>!\n\n"
         "Нажмите «Каталог», чтобы выбрать услугу и оформить заказ.\n"
-        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, "
-        "пополнить счёт или обратиться в поддержку.\n\n"
+        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, пополнить счёт или обратиться в поддержку.\n"
         "Команды: /catalog, /services, /balance, /topup, /help"
     )
     kb = InlineKeyboardMarkup([
@@ -154,6 +153,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html(text, reply_markup=kb)
     elif update.callback_query:
         await update.callback_query.message.reply_html(text, reply_markup=kb)
+ry.message.reply_html(text, reply_markup=kb)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -212,9 +212,8 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"✅ Пополнение зачтено. Баланс +{inv['amount']:.2f} ₽")
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает выбор платформ перед списком категорий."""
+    """Обработчик /catalog и callback 'catalog' — показывает выбор платформ."""
     await show_platforms(update, context)
-
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     data = load_catalog(); cats = data.get("categories", [])
@@ -383,11 +382,39 @@ async def _post_init(app: Application):
 
 
 
-SUPPORT_STATE = 10
+# --------- Дополнительные обработчики BoostX (баланс, категории платформ, поддержка) ---------
+
+def detect_platform_for_category(cat: dict) -> str:
+    """Грубое определение платформы по названию и элементам категории."""
+    title = (cat.get("title") or "").lower()
+    items_text = " ".join((it.get("title") or "") for it in cat.get("items", [])).lower()
+    combo = title + " " + items_text
+    if "tiktok" in combo or "tik tok" in combo or "tt " in combo or "tt_" in combo:
+        return "TikTok"
+    if "youtube" in combo or "yt " in combo or "shorts" in combo:
+        return "YouTube"
+    if "telegram" in combo or "tg " in combo:
+        return "Telegram"
+    # по умолчанию считаем Telegram, чтобы не ломать каталог
+    return "Telegram"
+
+
+async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Инлайн-инструкция по пополнению баланса (аналог /topup без суммы)."""
+    q = update.callback_query
+    await q.answer()
+    text = (
+        "Чтобы пополнить баланс, используйте эту инструкцию:\n"
+        "Использование: <code>/topup &lt;сумма&gt;</code>\n"
+        f"Ссылка на оплату: {PAY_URL}\n\n"
+        "В сообщении к переводу укажите: ваш @username и номер счёта (invoice_id), "
+        "который бот пришлёт после команды /topup."
+    )
+    await q.message.reply_html(text)
 
 
 async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Первый шаг каталога: выбор платформы."""
+    """Первый шаг каталога: выбор платформы (Telegram / YouTube / TikTok)."""
     query = update.callback_query
     if query:
         await query.answer()
@@ -406,121 +433,108 @@ async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_platform_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает категории только выбранной платформы."""
+    """Показывает категории, отфильтрованные по выбранной платформе."""
     q = update.callback_query
     await q.answer()
-
+    data = load_catalog()
+    cats = data.get("categories", [])
     try:
         _, platform = q.data.split("_", 1)
     except Exception:
         platform = "Telegram"
-    platform = (platform or "Telegram").strip().lower()
-
-    data = load_catalog()
-    cats = data.get("categories", [])
+    platform = platform or "Telegram"
 
     filtered = []
-    for i, cat in enumerate(cats):
-        title = (cat.get("title") or "").lower()
-        items_text = " ".join((it.get("title") or "").lower() for it in cat.get("items", []))
-        text = title + " " + items_text
-
-        if platform == "telegram":
-            cond = "telegram" in text or "tg " in text or "телеграм" in text
-        elif platform == "youtube":
-            cond = "youtube" in text or "yt " in text or "ютуб" in text
-        elif platform == "tiktok":
-            cond = "tiktok" in text or "tik tok" in text or "тикток" in text or "tt " in text
-        else:
-            cond = True
-
-        if cond:
-            filtered.append((i, cat))
+    for idx, cat in enumerate(cats):
+        if detect_platform_for_category(cat) == platform:
+            filtered.append((idx, cat))
 
     if not filtered:
-        await q.message.edit_text("Для выбранной платформы пока нет услуг.")
+        await q.message.reply_text("Для выбранной платформы пока нет услуг.")
         return
 
     buttons = [
-        [InlineKeyboardButton(cat.get("title","Категория"), callback_data=f"cat_{i}")]
-        for i, cat in filtered
+        [InlineKeyboardButton(cat.get("title", "Категория"), callback_data=f"cat_{idx}")]
+        for idx, cat in filtered
     ]
-    buttons.append(
-        [InlineKeyboardButton("⬅️ Назад к выбору платформы", callback_data="catalog")]
-    )
+    buttons.append([InlineKeyboardButton("⬅️ Назад к выбору платформы", callback_data="catalog")])
     kb = InlineKeyboardMarkup(buttons)
-
     await q.message.edit_html(
-        f"<b>Категории — {platform.capitalize()}</b>\nВыберите категорию:",
+        f"<b>Категории — {platform}</b>\nВыберите категорию:",
         reply_markup=kb,
     )
 
 
+# Поддержка и ответы админа
+SUPPORT_STATE = 10
+
 async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await q.message.reply_text(
-        "🆘 Напишите ваш вопрос одним сообщением, и я отправлю его администратору."
+    text = (
+        "🆘 <b>Поддержка BoostX</b>\n\n"
+        "Опишите, пожалуйста, ваш вопрос одним сообщением. Я передам его администратору, "
+        "и ответ придёт сюда же.\n\n"
+        "Чтобы отменить, отправьте /cancel."
     )
+    await q.message.reply_html(text)
     return SUPPORT_STATE
 
 
 async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    text = (update.message.text or "").strip()
+    msg_text = (update.message.text or "").strip()
+    if not msg_text:
+        await update.message.reply_text("Сообщение пустое. Отправьте, пожалуйста, текст вопроса.")
+        return SUPPORT_STATE
 
-    if not ADMIN_ID:
-        await update.message.reply_text("Поддержка временно недоступна.")
-        return ConversationHandler.END
-
-    msg = (
-        "🆘 <b>Новое обращение в поддержку</b>\n"
-        f"От: <a href=\"tg://user?id={user.id}\">{user.full_name}</a> "
-        f"(@{user.username or 'нет'})\n"
-        f"ID: <code>{user.id}</code>\n\n"
-        f"Сообщение:\n{text}"
+    # Пересылаем вопрос администратору
+    header = (
+        "❓ <b>Новое обращение в поддержку</b>\n\n"
+        f"От: @{user.username or 'без username'} (ID: <code>{user.id}</code>)\n\n"
+        f"{msg_text}\n\n"
+        f"Для ответа используйте: <code>/reply {user.id} &lt;текст ответа&gt;</code>"
     )
-    await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode=ParseMode.HTML)
-    await update.message.reply_text("Ваше обращение отправлено. Ожидайте ответа.")
+    try:
+        if ADMIN_ID:
+            await context.bot.send_message(ADMIN_ID, header, parse_mode=ParseMode.HTML)
+    except Exception:
+        # Не падаем, если админ недоступен
+        pass
+
+    await update.message.reply_text(
+        "Ваше сообщение отправлено в поддержку. Ответ придёт в этот чат, как только администратор его напишет."
+    )
     return ConversationHandler.END
 
 
 async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Диалог с поддержкой отменён.")
+    await update.message.reply_text("Обращение в поддержку отменено.")
     return ConversationHandler.END
 
 
 async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id != ADMIN_ID:
-        await update.message.reply_text("Команда доступна только администратору.")
+    """Команда для администраторов: /reply user_id текст"""
+    if update.effective_user.id != ADMIN_ID:
+        # тихо игнорируем, чтобы не светить админские команды
         return
     args = context.args or []
     if len(args) < 2:
-        await update.message.reply_text("Использование: /reply <user_id> <текст>")
+        await update.message.reply_text("Использование: /reply [user_id] [сообщение]")
         return
     try:
         target_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text("user_id должен быть числом.")
+    except Exception:
+        await update.message.reply_text("Неверный user_id.")
         return
     text = " ".join(args[1:])
     try:
-        await context.bot.send_message(chat_id=target_id, text=text)
-        await update.message.reply_text("Ответ отправлен.")
-    except Exception as e:
-        await update.message.reply_text(f"Не удалось отправить сообщение: {e}")
-
-
-async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    text = (
-        "Для пополнения баланса используйте команду "
-        "<code>/topup &lt;сумма&gt;</code> и ссылку на оплату:\n"
-        f"{PAY_URL}"
-    )
-    await q.message.reply_html(text)
+        await context.bot.send_message(target_id, f"💬 Ответ от поддержки BoostX:\n\n{text}")
+        await update.message.reply_text("Ответ отправлен пользователю.")
+    except Exception:
+        await update.message.reply_text(
+            "Не удалось отправить сообщение пользователю. Возможно, он не писал боту или заблокировал его."
+        )
 
 def build_application():
     app = (
@@ -541,7 +555,7 @@ def build_application():
     # Каталог / услуги
     app.add_handler(CommandHandler("catalog", show_catalog))
     app.add_handler(CommandHandler("services", show_catalog))
-    app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog$"))
+    app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog"))
     app.add_handler(CallbackQueryHandler(show_platform_categories, pattern="^platform_"))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
@@ -574,7 +588,6 @@ def build_application():
     app.add_handler(conv_support)
 
     return app
-
 if __name__ == "__main__":
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN is not set")

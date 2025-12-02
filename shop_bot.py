@@ -212,7 +212,7 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"✅ Пополнение зачтено. Баланс +{inv['amount']:.2f} ₽")
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает выбор платформ перед каталогом."""
+    """Первый шаг каталога: выбор платформы."""
     await show_platforms(update, context)
 
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -383,23 +383,11 @@ async def _post_init(app: Application):
 
 
 
-def detect_platform_for_category(cat: dict) -> str:
-    """Пытаемся определить платформу по названию категории и услуг."""
-    title = (cat.get("title") or "").lower()
-    items_titles = " ".join((it.get("title") or "").lower() for it in cat.get("items", []))
-    text = title + " " + items_titles
-    if "tiktok" in text or "tik tok" in text or "тикток" in text or "tt " in text:
-        return "TikTok"
-    if "youtube" in text or "yt " in text or "ютуб" in text:
-        return "YouTube"
-    if "telegram" in text or "телеграм" in text or "tg " in text:
-        return "Telegram"
-    # по умолчанию считаем телеграм
-    return "Telegram"
+SUPPORT_STATE = 10
 
 
 async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Первый шаг каталога: выбор платформы."""
+    """Показывает выбор платформ (Telegram / YouTube / TikTok)."""
     query = update.callback_query
     if query:
         await query.answer()
@@ -418,51 +406,46 @@ async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_platform_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает категории, отфильтрованные по выбранной платформе."""
+    """Показывает список всех категорий после выбора платформы.
+    Сейчас платформы используются как первый шаг, без жёсткой фильтрации.
+    """
     q = update.callback_query
     await q.answer()
 
+    # Пытаемся вытащить название платформы из callback_data: platform_Telegram -> Telegram
     try:
         _, platform = q.data.split("_", 1)
     except Exception:
-        platform = "Telegram"
-    platform = (platform or "Telegram").strip()
+        platform = "Каталог"
+    platform = (platform or "Каталог").strip()
 
     data = load_catalog()
     cats = data.get("categories", [])
-
-    filtered = []
-    for idx, cat in enumerate(cats):
-        if detect_platform_for_category(cat) == platform:
-            filtered.append((idx, cat))
-
-    if not filtered:
-        await q.message.edit_text("Для выбранной платформы пока нет услуг.")
+    if not cats:
+        await q.message.edit_text("Каталог временно пуст.")
         return
 
     buttons = [
-        [InlineKeyboardButton(cat.get("title", "Категория"), callback_data=f"cat_{idx}")]
-        for idx, cat in filtered
+        [InlineKeyboardButton(c.get("title", "Категория"), callback_data=f"cat_{i}")]
+        for i, c in enumerate(cats)
     ]
     buttons.append(
         [InlineKeyboardButton("⬅️ Назад к выбору платформы", callback_data="catalog")]
     )
     kb = InlineKeyboardMarkup(buttons)
+
     await q.message.edit_html(
-        f"<b>Категории — {platform}</b>\nВыберите категорию:",
+        f"<b>📋 Каталог BoostX — {platform}</b>\nВыберите категорию:",
         reply_markup=kb,
     )
 
 
-SUPPORT_STATE = 10
-
-
 async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Старт диалога с поддержкой."""
+    """Старт диалога с поддержкой из инлайн-кнопки."""
     q = update.callback_query
     await q.answer()
     await q.message.reply_text(
-        "🆘 Напишите ваш вопрос одним сообщением, и я передам его администратору."
+        "🆘 Напишите ваш вопрос одним сообщением, и я отправлю его администратору."
     )
     return SUPPORT_STATE
 
@@ -553,7 +536,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
     app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
 
-    # Оформление заказов
+    # Оформление заказов (как было)
     conv_order = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
         states={
@@ -566,7 +549,7 @@ def build_application():
     )
     app.add_handler(conv_order)
 
-    # Поддержка
+    # Поддержка (диалог по кнопке)
     conv_support = ConversationHandler(
         entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
         states={

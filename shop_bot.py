@@ -138,7 +138,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Добро пожаловать в <b>BoostX</b>!\n\n"
         "Нажмите «Каталог», чтобы выбрать услугу и оформить заказ.\n"
-        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, пополнить счёт или обратиться в поддержку.\n"
+        "Используйте кнопки ниже, чтобы открыть каталог, проверить баланс, "
+        "пополнить счёт или обратиться в поддержку.\n\n"
         "Команды: /catalog, /services, /balance, /topup, /help"
     )
     kb = InlineKeyboardMarkup([
@@ -152,8 +153,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_html(text, reply_markup=kb)
     elif update.callback_query:
-        await update.callback_query.message.reply_html(text, reply_markup=kb)
-ry.message.reply_html(text, reply_markup=kb)
+        q = update.callback_query
+        await q.message.reply_html(text, reply_markup=kb)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -214,6 +215,7 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик /catalog и callback 'catalog' — показывает выбор платформ."""
     await show_platforms(update, context)
+
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     data = load_catalog(); cats = data.get("categories", [])
@@ -418,7 +420,7 @@ async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
-        target = query.message
+        target = que
     else:
         target = update.message
     kb = InlineKeyboardMarkup([
@@ -430,7 +432,6 @@ async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>📋 Каталог BoostX</b>\n\nВыберите платформу:",
         reply_markup=kb,
     )
-
 
 async def show_platform_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает категории, отфильтрованные по выбранной платформе."""
@@ -560,7 +561,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
-    app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
 
     # Оформление заказов
     conv_order = ConversationHandler(
@@ -588,6 +588,7 @@ def build_application():
     app.add_handler(conv_support)
 
     return app
+
 if __name__ == "__main__":
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN is not set")

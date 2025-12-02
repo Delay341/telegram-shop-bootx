@@ -146,9 +146,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
         [
             InlineKeyboardButton("💳 Баланс", callback_data="balance"),
-            InlineKeyboardButton("💳 Пополнить", callback_data="topup"),
+            InlineKeyboardButton("💳 Пополнить", callback_data="topup")
         ],
-        [InlineKeyboardButton("🆘 Поддержка", callback_data="support")],
+        [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
     ])
     if update.message:
         await update.message.reply_html(text, reply_markup=kb)
@@ -212,18 +212,8 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"✅ Пополнение зачтено. Баланс +{inv['amount']:.2f} ₽")
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query: await query.answer()
-    data = load_catalog()
-    cats = data.get("categories", [])
-    if not cats:
-        target = query.message if query else update.message
-        await target.reply_text("Каталог временно пуст.")
-        return
-    buttons = [[InlineKeyboardButton(c.get("title","Категория"), callback_data=f"cat_{i}")] for i,c in enumerate(cats)]
-    kb = InlineKeyboardMarkup(buttons)
-    target = query.message if query else update.message
-    await target.reply_html("<b>📋 Каталог BoostX</b>\n\nВыберите категорию:", reply_markup=kb)
+    """Показывает выбор платформ перед списком категорий."""
+    await show_platforms(update, context)
 
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -396,8 +386,77 @@ async def _post_init(app: Application):
 SUPPORT_STATE = 10
 
 
+async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Первый шаг каталога: выбор платформы."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+        target = query.message
+    else:
+        target = update.message
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Telegram", callback_data="platform_Telegram")],
+        [InlineKeyboardButton("YouTube", callback_data="platform_YouTube")],
+        [InlineKeyboardButton("TikTok", callback_data="platform_TikTok")],
+    ])
+    await target.reply_html(
+        "<b>📋 Каталог BoostX</b>\n\nВыберите платформу:",
+        reply_markup=kb,
+    )
+
+
+async def show_platform_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает категории только выбранной платформы."""
+    q = update.callback_query
+    await q.answer()
+
+    try:
+        _, platform = q.data.split("_", 1)
+    except Exception:
+        platform = "Telegram"
+    platform = (platform or "Telegram").strip().lower()
+
+    data = load_catalog()
+    cats = data.get("categories", [])
+
+    filtered = []
+    for i, cat in enumerate(cats):
+        title = (cat.get("title") or "").lower()
+        items_text = " ".join((it.get("title") or "").lower() for it in cat.get("items", []))
+        text = title + " " + items_text
+
+        if platform == "telegram":
+            cond = "telegram" in text or "tg " in text or "телеграм" in text
+        elif platform == "youtube":
+            cond = "youtube" in text or "yt " in text or "ютуб" in text
+        elif platform == "tiktok":
+            cond = "tiktok" in text or "tik tok" in text or "тикток" in text or "tt " in text
+        else:
+            cond = True
+
+        if cond:
+            filtered.append((i, cat))
+
+    if not filtered:
+        await q.message.edit_text("Для выбранной платформы пока нет услуг.")
+        return
+
+    buttons = [
+        [InlineKeyboardButton(cat.get("title","Категория"), callback_data=f"cat_{i}")]
+        for i, cat in filtered
+    ]
+    buttons.append(
+        [InlineKeyboardButton("⬅️ Назад к выбору платформы", callback_data="catalog")]
+    )
+    kb = InlineKeyboardMarkup(buttons)
+
+    await q.message.edit_html(
+        f"<b>Категории — {platform.capitalize()}</b>\nВыберите категорию:",
+        reply_markup=kb,
+    )
+
+
 async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Старт диалога с поддержкой из инлайн-кнопки."""
     q = update.callback_query
     await q.answer()
     await q.message.reply_text(
@@ -407,7 +466,6 @@ async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получаем сообщение пользователя и пересылаем админу."""
     user = update.effective_user
     text = (update.message.text or "").strip()
 
@@ -433,7 +491,6 @@ async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ответ администратора пользователю: /reply user_id текст"""
     user = update.effective_user
     if user.id != ADMIN_ID:
         await update.message.reply_text("Команда доступна только администратору.")
@@ -456,7 +513,6 @@ async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Инлайн-кнопка пополнения баланса."""
     q = update.callback_query
     await q.answer()
     text = (
@@ -486,12 +542,13 @@ def build_application():
     app.add_handler(CommandHandler("catalog", show_catalog))
     app.add_handler(CommandHandler("services", show_catalog))
     app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog$"))
+    app.add_handler(CallbackQueryHandler(show_platform_categories, pattern="^platform_"))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
     app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
 
-    # Оформление заказов (как было)
+    # Оформление заказов
     conv_order = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
         states={
@@ -504,7 +561,7 @@ def build_application():
     )
     app.add_handler(conv_order)
 
-    # Поддержка (диалог по кнопке)
+    # Поддержка
     conv_support = ConversationHandler(
         entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
         states={

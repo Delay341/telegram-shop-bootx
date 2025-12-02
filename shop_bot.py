@@ -153,8 +153,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html(text, reply_markup=kb)
     elif update.callback_query:
         await update.callback_query.message.reply_html(text, reply_markup=kb)
-ry.message.reply_html(text, reply_markup=kb)
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📘 Команды:\n"

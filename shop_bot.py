@@ -420,7 +420,7 @@ async def show_platforms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
-        target = que
+        target = query.message
     else:
         target = update.message
     kb = InlineKeyboardMarkup([

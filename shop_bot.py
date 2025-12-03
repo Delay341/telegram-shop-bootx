@@ -467,32 +467,36 @@ async def _post_init(app: Application):
         print(f"⚠️ HTTP server start error: {e}")
 
 
-# --------- Дополнительные обработчики BoostX (баланс, категории платформ, поддержка) ---------
-
-
 def detect_platform_for_category(cat: dict) -> str:
     """
     Определение платформы для категории.
-    1) Если явно указано cat['platform'] — используем её.
-    2) Иначе пытаемся угадать по названию и элементам.
+    Приоритет:
+    1) Явное поле cat['platform'] (если когда-нибудь захочешь прописать).
+    2) Префиксы id: yt_ -> YouTube, tt_ -> TikTok.
+    3) По тексту title/items.
+    4) По умолчанию считаем Telegram.
     """
+    # 1) Явное поле
     explicit = (cat.get("platform") or "").strip()
     if explicit:
-        # ожидаем значения 'Telegram' / 'YouTube' / 'TikTok'
-        return explicit
+        return explicit  # ожидаем 'Telegram' / 'YouTube' / 'TikTok'
 
+    cid = (cat.get("id") or "").lower()
     title = (cat.get("title") or "").lower()
     items_text = " ".join((it.get("title") or "") for it in cat.get("items", [])).lower()
-    combo = title + " " + items_text
+    combo = " ".join([cid, title, items_text])
 
-    if "tiktok" in combo or "tik tok" in combo or "tt " in combo or "tt_" in combo:
-        return "TikTok"
-    if "youtube" in combo or "yt " in combo or "shorts" in combo:
+    # 2) По id
+    if cid.startswith("yt_") or "youtube" in combo or "shorts" in combo:
         return "YouTube"
+    if cid.startswith("tt_") or "tiktok" in combo or "tik tok" in combo or "tt " in combo or "tt_" in combo:
+        return "TikTok"
+
+    # 3) Telegram по названию/элементам
     if "telegram" in combo or "tg " in combo:
         return "Telegram"
 
-    # по умолчанию считаем Telegram, чтобы не ломать каталог
+    # 4) По умолчанию: Telegram (у тебя большинство категорий — под телегу)
     return "Telegram"
 
 
@@ -561,13 +565,13 @@ async def show_platform_categories(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("⬅️ Назад к выбору платформы", callback_data="catalog")]
     )
     kb = InlineKeyboardMarkup(buttons)
-    await q.message.edit_html(
+
+    await q.message.reply_html(
         f"<b>Категории — {platform}</b>\nВыберите категорию:",
         reply_markup=kb,
     )
 
 
-# Поддержка и ответы админа
 SUPPORT_STATE = 10
 
 
@@ -591,7 +595,6 @@ async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сообщение пустое. Отправьте, пожалуйста, текст вопроса.")
         return SUPPORT_STATE
 
-    # Пересылаем вопрос администратору
     header = (
         "❓ <b>Новое обращение в поддержку</b>\n\n"
         f"От: @{user.username or 'без username'} (ID: <code>{user.id}</code>)\n\n"
@@ -602,7 +605,6 @@ async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ADMIN_ID:
             await context.bot.send_message(ADMIN_ID, header, parse_mode=ParseMode.HTML)
     except Exception:
-        # Не падаем, если админ недоступен
         pass
 
     await update.message.reply_text(
@@ -617,9 +619,7 @@ async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для администраторов: /reply user_id текст"""
     if update.effective_user.id != ADMIN_ID:
-        # тихо игнорируем, чтобы не светить админские команды
         return
     args = context.args or []
     if len(args) < 2:
@@ -650,7 +650,7 @@ def build_application():
         .post_init(_post_init)
         .build()
     )
-    # Команды
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("balance", balance_cmd))
@@ -658,7 +658,6 @@ def build_application():
     app.add_handler(CommandHandler("confirm_payment", confirm_payment_cmd))
     app.add_handler(CommandHandler("reply", reply_cmd))
 
-    # Каталог / услуги
     app.add_handler(CommandHandler("catalog", show_catalog))
     app.add_handler(CommandHandler("services", show_catalog))
     app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog"))
@@ -668,7 +667,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
     app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
 
-    # Оформление заказов
     conv_order = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
         states={
@@ -681,7 +679,6 @@ def build_application():
     )
     app.add_handler(conv_order)
 
-    # Поддержка
     conv_support = ConversationHandler(
         entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
         states={

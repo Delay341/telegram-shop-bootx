@@ -268,6 +268,8 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 LINK, QTY = range(2)
 
+ = range(2)
+
 async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, cidx, iidx = q.data.split("_"); cidx = int(cidx); iidx = int(iidx)

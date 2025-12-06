@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, json, asyncio, time, uuid
+import os
+import json
+import asyncio
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -11,15 +15,30 @@ import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
-    ApplicationBuilder, Application, Defaults, CommandHandler, CallbackQueryHandler,
-    ConversationHandler, MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    Application,
+    Defaults,
+    CommandHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
+# ---------------------------------------------------------------------------
+# Конфиг
+# ---------------------------------------------------------------------------
+
 load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 LOOKSMM_KEY = os.getenv("LOOKSMM_KEY", "").strip()
-PAY_URL = os.getenv("PAY_URL", "https://www.tinkoff.ru/rm/r_nIutIhQtbX.tRouMxMcdC/kgUL962390")
+PAY_URL = os.getenv(
+    "PAY_URL",
+    "https://www.tinkoff.ru/rm/r_nIutIhQtbX.tRouMxMcdC/kgUL962390",
+)
 
 CATALOG_PATH = Path("config/config.json")
 MAP_PATH = Path("config/service_map.json")
@@ -28,6 +47,10 @@ BALANCES_FILE = Path("balances.json")
 ORDERS_FILE = Path("orders.json")
 INVOICES_FILE = Path("invoices.json")
 
+
+# ---------------------------------------------------------------------------
+# Работа с JSON-хранилищами
+# ---------------------------------------------------------------------------
 
 def _read_json(path: Path, default):
     try:
@@ -51,7 +74,7 @@ def load_catalog() -> Dict[str, Any]:
 
 def load_map() -> Dict[str, int]:
     raw = _read_json(MAP_PATH, {"map": []})
-    mapping = {}
+    mapping: Dict[str, int] = {}
     for row in raw.get("map", []):
         cat = (row.get("cat") or "").strip()
         item = (row.get("item") or "").strip()
@@ -124,6 +147,10 @@ def append_order(order: dict):
     _write_json(ORDERS_FILE, rows)
 
 
+# ---------------------------------------------------------------------------
+# Работа с Looksmm
+# ---------------------------------------------------------------------------
+
 def looksmm_services() -> List[dict]:
     if not LOOKSMM_KEY:
         raise RuntimeError("LOOKSMM_KEY is not set")
@@ -160,6 +187,10 @@ def price_str(price: float, unit: str, mult: float) -> str:
     tail = "за 1000" if unit == "per_1000" else "за 100"
     return f"{p:.2f} ₽ {tail}"
 
+
+# ---------------------------------------------------------------------------
+# Команды: /start, /help, баланс, пополнение
+# ---------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -223,6 +254,7 @@ async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "который я пришлю после /topup."
         )
         return
+
     try:
         amount = float(args[0].replace(",", "."))
         if amount <= 0:
@@ -230,6 +262,7 @@ async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("Сумма должна быть положительным числом.")
         return
+
     inv = create_invoice(
         update.effective_user.id,
         amount,
@@ -246,11 +279,13 @@ async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
+
     if not context.args:
         await update.message.reply_html(
             "Использование: <code>/confirm_payment &lt;invoice_id&gt;</code>"
         )
         return
+
     inv = confirm_invoice(context.args[0])
     if not inv:
         await update.message.reply_text("Счёт не найден или уже оплачен.")
@@ -260,16 +295,22 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
+# ---------------------------------------------------------------------------
+# Каталог услуг
+# ---------------------------------------------------------------------------
+
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
+
     data = load_catalog()
     cats = data.get("categories", [])
     if not cats:
         target = query.message if query else update.message
         await target.reply_text("Каталог временно пуст.")
         return
+
     buttons = [
         [
             InlineKeyboardButton(
@@ -288,6 +329,7 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+
     data = load_catalog()
     cats = data.get("categories", [])
     try:
@@ -295,14 +337,17 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await q.answer("Ошибка категории")
         return
+
     if idx < 0 or idx >= len(cats):
         await q.answer("Категория не найдена")
         return
+
     cat = cats[idx]
     title = cat.get("title", "Категория")
     unit = cat.get("unit", "per_1000")
     mult = float(data.get("pricing_multiplier", 1.0))
-    rows = []
+
+    rows: List[List[InlineKeyboardButton]] = []
     for i, item in enumerate(cat.get("items", [])):
         label = (
             f"{item.get('title', 'Услуга')} — "
@@ -315,14 +360,20 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             ]
         )
+
     rows.append(
         [InlineKeyboardButton("⬅️ Назад к категориям", callback_data="catalog")]
     )
+
     await q.message.reply_html(
         f"<b>{title}</b>\nВыберите услугу:",
         reply_markup=InlineKeyboardMarkup(rows),
     )
 
+
+# ---------------------------------------------------------------------------
+# Оформление заказа
+# ---------------------------------------------------------------------------
 
 LINK, QTY = range(2)
 
@@ -330,9 +381,11 @@ LINK, QTY = range(2)
 async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+
     _, cidx, iidx = q.data.split("_")
     cidx = int(cidx)
     iidx = int(iidx)
+
     data = load_catalog()
     try:
         cat = data["categories"][cidx]
@@ -340,6 +393,7 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await q.message.reply_text("Ошибка выбора услуги.")
         return ConversationHandler.END
+
     context.user_data["order"] = {
         "cat_idx": cidx,
         "item_idx": iidx,
@@ -349,6 +403,7 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "title": item.get("title", "Услуга"),
         "price": float(item.get("price", 0)),
     }
+
     await q.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
     return LINK
 
@@ -365,6 +420,7 @@ async def order_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Похоже, это не ссылка. Отправьте корректный URL:"
         )
         return LINK
+
     context.user_data["order"]["link"] = link
     await update.message.reply_text("🔢 Укажите количество (целое число):")
     return QTY
@@ -380,7 +436,7 @@ def resolve_service_id(cat_title: str, item_title: str) -> int | None:
     return m.get(f"{cat_title}:::{item_title}")
 
 
-def ensure_qty_limits(service_id: int, qty: int) -> Tuple[int, int, int]:
+def ensure_qty_limits(service_id: int, qty: int) -> Tuple[int, int | None, int | None]:
     try:
         svcs = looksmm_services()
         svc = next(
@@ -405,6 +461,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Количество должно быть целым числом. Введите ещё раз:"
         )
         return QTY
+
     qty = int(txt)
     if qty <= 0:
         await update.message.reply_text(
@@ -420,7 +477,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    # validate limits
+    # проверка лимитов
     adj_qty, min_q, max_q = await asyncio.to_thread(ensure_qty_limits, int(sid), qty)
     if min_q is not None and qty < min_q:
         await update.message.reply_text(
@@ -436,6 +493,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cost = compute_cost(info["price"], info["unit"], info["mult"], qty)
     uid = update.effective_user.id
     bal = get_balance(uid)
+
     if bal < cost:
         await update.message.reply_text(
             f"Недостаточно средств. Нужно {cost:.2f} ₽, на балансе {bal:.2f} ₽.\n"
@@ -482,14 +540,18 @@ async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# Simple health server for Render
-async def _start_http_server(app_obj):
+# ---------------------------------------------------------------------------
+# HTTP health-сервер для Render
+# ---------------------------------------------------------------------------
+
+async def _start_http_server(app_obj: Application):
     async def health(_request):
         return web.Response(text="ok")
 
     http_app = web.Application()
     http_app.router.add_get("/", health)
     http_app.router.add_get("/healthz", health)
+
     port = int(os.getenv("PORT", "10000"))
     runner = web.AppRunner(http_app)
     await runner.setup()
@@ -505,14 +567,16 @@ async def _post_init(app: Application):
         print("✅ Webhook удалён, polling активирован.")
     except Exception as e:
         print(f"⚠️ Ошибка удаления webhook: {e}")
+
     try:
         await _start_http_server(app)
     except Exception as e:
         print(f"⚠️ HTTP server start error: {e}")
 
 
-# --------- Дополнительные обработчики BoostX (баланс, поддержка) ---------
-
+# ---------------------------------------------------------------------------
+# Дополнительные обработчики BoostX (топап, поддержка, /reply)
+# ---------------------------------------------------------------------------
 
 async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Инлайн-инструкция по пополнению баланса (аналог /topup без суммы)."""
@@ -528,7 +592,6 @@ async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_html(text)
 
 
-# Поддержка и ответы админа
 SUPPORT_STATE = 10
 
 
@@ -554,7 +617,6 @@ async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SUPPORT_STATE
 
-    # Если ADMIN_ID не настроен — сообщаем пользователю
     if not ADMIN_ID:
         await update.message.reply_text(
             "Поддержка временно недоступна. Попробуйте позже."
@@ -573,7 +635,6 @@ async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ADMIN_ID, header, parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        # Логируем и сообщаем пользователю об ошибке
         print(f"Support send error: {e}")
         await update.message.reply_text(
             "Не удалось отправить сообщение в поддержку. Попробуйте позже."
@@ -593,19 +654,21 @@ async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для администраторов: /reply user_id текст"""
+    """Ответ администратора пользователю: /reply user_id текст"""
     if update.effective_user.id != ADMIN_ID:
-        # тихо игнорируем, чтобы не светить админские команды
         return
+
     args = context.args or []
     if len(args) < 2:
         await update.message.reply_text("Использование: /reply [user_id] [сообщение]")
         return
+
     try:
         target_id = int(args[0])
     except Exception:
         await update.message.reply_text("Неверный user_id.")
         return
+
     text = " ".join(args[1:])
     try:
         await context.bot.send_message(
@@ -619,7 +682,11 @@ async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-def build_application():
+# ---------------------------------------------------------------------------
+# Сборка приложения
+# ---------------------------------------------------------------------------
+
+def build_application() -> Application:
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
@@ -627,6 +694,7 @@ def build_application():
         .post_init(_post_init)
         .build()
     )
+
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -638,11 +706,12 @@ def build_application():
     # Каталог / услуги
     app.add_handler(CommandHandler("catalog", show_catalog))
     app.add_handler(CommandHandler("services", show_catalog))
-    app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog"))
+    app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog$"))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
-    app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
+    # ВАЖНО: НЕ добавляем отдельный CallbackQueryHandler(support_entry),
+    # чтобы поддержка полностью обрабатывалась ConversationHandler'ом.
 
     # Оформление заказов
     conv_order = ConversationHandler(
@@ -663,7 +732,8 @@ def build_application():
         states={
             SUPPORT_STATE: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, support_collect
+                    filters.TEXT & ~filters.COMMAND,
+                    support_collect,
                 )
             ],
         },
@@ -675,6 +745,10 @@ def build_application():
 
     return app
 
+
+# ---------------------------------------------------------------------------
+# Точка входа
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     if not BOT_TOKEN:

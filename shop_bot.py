@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid  # ← добавил для генерации invoice_id
 from typing import Dict, Any
 
 from telegram import (
@@ -32,6 +33,9 @@ if not BOT_TOKEN:
 # Можно указать один и тот же ID
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 SUPPORT_CHAT_ID = os.getenv("SUPPORT_CHAT_ID") or ADMIN_CHAT_ID
+
+# Ссылка для пополнения (PAY_URL из ENV)
+PAY_URL = os.getenv("PAY_URL", "Ссылка для пополнения не настроена")
 
 # Простая «база товаров» (можно потом заменить на свою)
 PRODUCTS = {
@@ -120,20 +124,46 @@ def get_user_tag(update: Update) -> str:
     return f"id={user.id}"
 
 
+def generate_invoice_id(update: Update) -> str:
+    """Простая генерация invoice_id (можешь потом заменить своей логикой)."""
+    user = update.effective_user
+    base = str(user.id) if user else ""
+    rand = uuid.uuid4().hex[:6].upper()
+    return f"{base}-{rand}" if base else rand
+
+
 # ================= ХЕНДЛЕРЫ КОМАНД =================
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    invoice_id = generate_invoice_id(update)
+
     text = (
-        "Привет! 👋\n\n"
-        "Это шоп-бот.\n"
-        "Через него можно посмотреть товары и отправить заявку на покупку.\n\n"
-        "Выбери нужный пункт меню ниже 👇"
+        "👋 Добро пожаловать в <b>BoostX</b> — платформу профессионального продвижения.\n\n"
+        "Мы помогаем развивать <b>Telegram</b>, <b>YouTube</b> и <b>TikTok</b> "
+        "с быстрыми и надёжными результатами.\n\n"
+        "Откройте каталог, чтобы выбрать услугу, или воспользуйтесь кнопками ниже "
+        "для управления балансом и связи с поддержкой.\n\n"
+        "💳 <b>Пополнение баланса</b>\n\n"
+        f"Ваш индивидуальный номер транзакции: <code>{invoice_id}</code>\n"
+        "При переводе укажите этот номер в комментарии к платежу "
+        "или в сообщении вместе с переводом, чтобы мы могли быстрее найти оплату.\n\n"
+        "Ссылка для пополнения:\n"
+        f"{PAY_URL}"
     )
+
     if update.message:
-        await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+        await update.message.reply_text(
+            text,
+            reply_markup=main_menu_keyboard(),
+            parse_mode="HTML",
+        )
     elif update.callback_query:
-        await update.callback_query.message.edit_text(text, reply_markup=main_menu_keyboard())
+        await update.callback_query.message.edit_text(
+            text,
+            reply_markup=main_menu_keyboard(),
+            parse_mode="HTML",
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -429,8 +459,8 @@ def build_application() -> Any:
             CommandHandler("cancel", order_cancel_cmd),
             CallbackQueryHandler(order_cancel_cb, pattern=r"^cancel_conv$"),
         ],
-        # ОБНОВЛЕНИЕ: включено отслеживание per_message=True,
-        # чтобы корректно работали CallbackQueryHandler внутри ConversationHandler
+        # per_message=True оставил как у тебя,
+        # чтобы не трогать остальную логику
         per_message=True,
     )
 
@@ -448,7 +478,7 @@ def build_application() -> Any:
         fallbacks=[
             CallbackQueryHandler(support_cancel_cb, pattern=r"^cancel_support$"),
         ],
-        per_message=True,  # тоже с обновлением per_message
+        per_message=True,
     )
     # ВАЖНО: conv_support добавим, но запускать состояние будем через возврат SUPPORT_MESSAGE в menu_router
 

@@ -1,505 +1,527 @@
-import logging
-import os
-import uuid  # для генерации invoice_id
-from typing import Dict, Any
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+import os, json, asyncio, time, uuid
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from dotenv import load_dotenv
+from aiohttp import web
+import requests
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters,
+    ApplicationBuilder, Application, Defaults, CommandHandler, CallbackQueryHandler,
+    ConversationHandler, MessageHandler, ContextTypes, filters
 )
 
-# ================= НАСТРОЙКИ =================
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN","").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID","0"))
+LOOKSMM_KEY = os.getenv("LOOKSMM_KEY","").strip()
+PAY_URL = os.getenv("PAY_URL","https://www.tinkoff.ru/rm/r_nIutIhQtbX.tRouMxMcdC/kgUL962390")
 
-# Токен бота
-BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
+CATALOG_PATH = Path("config/config.json")
+MAP_PATH = Path("config/service_map.json")
 
-if not BOT_TOKEN:
-    raise RuntimeError(
-        "Не найден BOT_TOKEN/TELEGRAM_TOKEN в переменных окружения. "
-        "Добавь его в настройках Render."
-    )
+BALANCES_FILE = Path("balances.json")
+ORDERS_FILE = Path("orders.json")
+INVOICES_FILE = Path("invoices.json")
 
-# ID админа / чата, куда будут уходить заявки и сообщения в поддержку
-# Можно указать один и тот же ID
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-SUPPORT_CHAT_ID = os.getenv("SUPPORT_CHAT_ID") or ADMIN_CHAT_ID
+def _read_json(path: Path, default):
+    try:
+        if not path.exists(): return default
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
 
-# Ссылка для пополнения (PAY_URL из ENV)
-PAY_URL = os.getenv("PAY_URL", "Ссылка для пополнения не настроена")
+def _write_json(path: Path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-# Простая «база товаров» (можно потом заменить на свою)
-PRODUCTS = {
-    1: {
-        "title": "Тестовый товар #1",
-        "description": "Описание первого товара. Например: доступ к паку файлов.",
-        "price": 199,  # в рублях (для текста, без реального платежного API)
-    },
-    2: {
-        "title": "Тестовый товар #2",
-        "description": "Описание второго товара. Можно заменить на любой.",
-        "price": 349,
-    },
-}
+def load_catalog() -> Dict[str, Any]:
+    data = _read_json(CATALOG_PATH, {"pricing_multiplier":1.0, "categories":[]})
+    data.setdefault("pricing_multiplier", 1.0)
+    data.setdefault("categories", [])
+    return data
 
+def load_map() -> Dict[str, int]:
+    raw = _read_json(MAP_PATH, {"map":[]})
+    mapping = {}
+    for row in raw.get("map", []):
+        cat = (row.get("cat") or "").strip()
+        item = (row.get("item") or "").strip()
+        sid = row.get("service_id")
+        if cat and item and sid:
+            key = f"{cat}:::{item}"
+            try:
+                mapping[key] = int(sid)
+            except Exception:
+                pass
+    return mapping
 
-# ================= ЛОГИРОВАНИЕ =================
+def get_balance(user_id: int) -> float:
+    rows = _read_json(BALANCES_FILE, [])
+    for r in rows:
+        if r.get("user_id")==user_id:
+            return float(r.get("balance",0))
+    return 0.0
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+def set_balance(user_id: int, value: float) -> float:
+    rows = _read_json(BALANCES_FILE, [])
+    for r in rows:
+        if r.get("user_id")==user_id:
+            r["balance"] = float(value); _write_json(BALANCES_FILE, rows); return float(value)
+    rows.append({"user_id": user_id, "balance": float(value)})
+    _write_json(BALANCES_FILE, rows)
+    return float(value)
 
+def add_balance(user_id: int, delta: float) -> float:
+    return set_balance(user_id, get_balance(user_id)+float(delta))
 
-# ================= СОСТОЯНИЯ ДЛЯ CONVERSATIONHANDLER =================
+def create_invoice(user_id: int, amount: float, note: str="") -> dict:
+    inv = {
+        "invoice_id": uuid.uuid4().hex,
+        "user_id": user_id,
+        "amount": float(amount),
+        "note": note,
+        "status": "pending",
+        "created_at": int(time.time()),
+        "paid_at": None
+    }
+    data = _read_json(INVOICES_FILE, []); data.append(inv); _write_json(INVOICES_FILE, data)
+    return inv
 
-ORDER_NAME, ORDER_CONTACT = range(2)
-SUPPORT_MESSAGE = range(1)
+def confirm_invoice(invoice_id: str) -> dict|None:
+    data = _read_json(INVOICES_FILE, [])
+    for inv in data:
+        if inv.get("invoice_id")==invoice_id and inv.get("status")!="paid":
+            inv["status"]="paid"; inv["paid_at"]=int(time.time())
+            _write_json(INVOICES_FILE, data)
+            add_balance(inv["user_id"], inv["amount"])
+            return inv
+    return None
 
+def append_order(order: dict):
+    rows = _read_json(ORDERS_FILE, [])
+    order["created_at"] = int(time.time())
+    rows.append(order); _write_json(ORDERS_FILE, rows)
 
-# ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
+def looksmm_services() -> List[dict]:
+    if not LOOKSMM_KEY: raise RuntimeError("LOOKSMM_KEY is not set")
+    url = "https://looksmm.ru/api/v2"
+    r = requests.get(url, params={"action":"services","key":LOOKSMM_KEY}, timeout=30)
+    r.raise_for_status(); return r.json()
 
+def looksmm_add(service_id: int, link: str, quantity: int) -> Any:
+    if not LOOKSMM_KEY: raise RuntimeError("LOOKSMM_KEY is not set")
+    url = "https://looksmm.ru/api/v2"
+    r = requests.get(url, params={
+        "action": "add",
+        "service": service_id,
+        "link": link,
+        "quantity": quantity,
+        "key": LOOKSMM_KEY
+    }, timeout=30)
+    r.raise_for_status()
+    try:
+        return r.json()
+    except Exception:
+        return r.text
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("📦 Товары", callback_data="menu_products")],
-        [InlineKeyboardButton("✉ Поддержка", callback_data="menu_support")],
-        [InlineKeyboardButton("ℹ О боте", callback_data="menu_info")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+def price_str(price: float, unit: str, mult: float) -> str:
+    p = float(price) * float(mult)
+    tail = "за 1000" if unit=="per_1000" else "за 100"
+    return f"{p:.2f} ₽ {tail}"
 
+# ---------- /start (ОБНОВЛЁННЫЙ ТЕКСТ БЕЗ ПОПОЛНЕНИЯ) ----------
 
-def products_keyboard() -> InlineKeyboardMarkup:
-    keyboard = []
-    for pid, item in PRODUCTS.items():
-        keyboard.append(
-            [InlineKeyboardButton(f"{item['title']} — {item['price']}₽", callback_data=f"product_{pid}")]
-        )
-    keyboard.append([InlineKeyboardButton("⬅ Назад", callback_data="menu_main")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-def product_action_keyboard(product_id: int) -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("🛒 Оформить заказ", callback_data=f"buy_{product_id}")],
-        [InlineKeyboardButton("⬅ Назад к товарам", callback_data="menu_products")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_conv")]]
-    )
-
-
-def support_cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_support")]]
-    )
-
-
-def get_user_tag(update: Update) -> str:
-    user = update.effective_user
-    if not user:
-        return "Неизвестный пользователь"
-    username = f"@{user.username}" if user.username else ""
-    name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    if username and name:
-        return f"{name} ({username}, id={user.id})"
-    elif username:
-        return f"{username} (id={user.id})"
-    elif name:
-        return f"{name} (id={user.id})"
-    return f"id={user.id}"
-
-
-def generate_invoice_id(update: Update) -> str:
-    """Простая генерация invoice_id (можешь потом заменить своей логикой)."""
-    user = update.effective_user
-    base = str(user.id) if user else ""
-    rand = uuid.uuid4().hex[:6].upper()
-    return f"{base}-{rand}" if base else rand
-
-
-# ================= ХЕНДЛЕРЫ КОМАНД =================
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    invoice_id = generate_invoice_id(update)
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Добро пожаловать в <b>BoostX</b> — платформу профессионального продвижения.\n\n"
         "Мы помогаем развивать <b>Telegram</b>, <b>YouTube</b> и <b>TikTok</b> "
         "с быстрыми и надёжными результатами.\n\n"
         "Откройте каталог, чтобы выбрать услугу, или воспользуйтесь кнопками ниже "
-        "для управления балансом и связи с поддержкой.\n\n"
-        "💳 <b>Пополнение баланса</b>\n\n"
-        f"Ваш индивидуальный номер транзакции: <code>{invoice_id}</code>\n"
-        "При переводе укажите этот номер в комментарии к платежу "
-        "или в сообщении вместе с переводом, чтобы мы могли быстрее найти оплату.\n\n"
-        "Ссылка для пополнения:\n"
-        f"{PAY_URL}"
+        "для управления балансом и связи с поддержкой."
     )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
+        [
+            InlineKeyboardButton("💳 Баланс", callback_data="balance"),
+            InlineKeyboardButton("💳 Пополнить", callback_data="topup")
+        ],
+        [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
+    ])
 
     if update.message:
-        await update.message.reply_text(
-            text,
-            reply_markup=main_menu_keyboard(),
-            parse_mode="HTML",
-        )
+        await update.message.reply_html(text, reply_markup=kb)
     elif update.callback_query:
-        await update.callback_query.message.edit_text(
-            text,
-            reply_markup=main_menu_keyboard(),
-            parse_mode="HTML",
-        )
+        await update.callback_query.message.reply_html(text, reply_markup=kb)
 
+# ---------- дальше всё как было ----------
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "❓ *Помощь*\n\n"
-        "Основные команды:\n"
-        "/start — главное меню\n"
-        "/help — это сообщение\n\n"
-        "Все заявки отправляются админу в личку/чат (настроено через переменные окружения)."
+        "📘 Команды:\n"
+        "/start — приветствие\n"
+        "/catalog — каталог услуг\n"
+        "/balance — баланс\n"
+        "/topup &lt;сумма&gt; — пополнить баланс\n"
+        "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)\n"
     )
-    await update.message.reply_markdown(text)
+    await update.message.reply_html(text)
 
+async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    await update.message.reply_html(f"💳 <b>Ваш баланс:</b> <code>{get_balance(uid):.2f} ₽</code>")
 
-# ================= ОБРАБОТКА CALLBACK-КНОПОК (МЕНЮ) =================
+async def balance_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    await q.message.reply_html(f"💳 <b>Ваш баланс:</b> <code>{get_balance(uid):.2f} ₽</code>")
 
+async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args or []
+    if not args:
+        await update.message.reply_html(
+            "Использование: <code>/topup &lt;сумма&gt;</code>\n"
+            f"Ссылка на оплату: {PAY_URL}\n\n"
+            "В сообщении к переводу укажите: ваш @username и номер счёта (invoice_id), который я пришлю после /topup."
+        )
+        return
+    try:
+        amount = float(args[0].replace(",", "."))
+        if amount <= 0: raise ValueError
+    except Exception:
+        await update.message.reply_text("Сумма должна быть положительным числом.")
+        return
+    inv = create_invoice(update.effective_user.id, amount, note=f"user={update.effective_user.username}")
+    await update.message.reply_html(
+        f"🧾 <b>Счёт создан:</b> <code>{inv['invoice_id']}</code>\n"
+        f"Сумма: <b>{amount:.2f} ₽</b>\n\n"
+        f"Оплатите по ссылке: {PAY_URL}\n"
+        "В сообщении к переводу укажите: ваш @username и номер счёта (invoice_id)."
+    )
 
-async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Роутер для простых callback_data меню."""
+async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_html("Использование: <code>/confirm_payment &lt;invoice_id&gt;</code>")
+        return
+    inv = confirm_invoice(context.args[0])
+    if not inv:
+        await update.message.reply_text("Счёт не найден или уже оплачен.")
+    else:
+        await update.message.reply_text(f"✅ Пополнение зачтено. Баланс +{inv['amount']:.2f} ₽")
+
+async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
-    data = query.data
-
-    if data == "menu_main":
-        await query.message.edit_text(
-            "Главное меню 👇", reply_markup=main_menu_keyboard()
-        )
+    if query:
+        await query.answer()
+    data = load_catalog()
+    cats = data.get("categories", [])
+    if not cats:
+        target = query.message if query else update.message
+        await target.reply_text("Каталог временно пуст.")
         return
+    buttons = [[InlineKeyboardButton(c.get("title","Категория"), callback_data=f"cat_{i}")] for i,c in enumerate(cats)]
+    kb = InlineKeyboardMarkup(buttons)
+    target = query.message if query else update.message
+    await target.reply_html("<b>📋 Каталог BoostX</b>\n\nВыберите категорию:", reply_markup=kb)
 
-    if data == "menu_products":
-        await query.message.edit_text(
-            "📦 Список доступных товаров:", reply_markup=products_keyboard()
-        )
-        return
+async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    data = load_catalog(); cats = data.get("categories", [])
+    try:
+        idx = int(q.data.split("_")[1])
+    except Exception:
+        await q.answer("Ошибка категории"); return
+    if idx < 0 or idx >= len(cats):
+        await q.answer("Категория не найдена"); return
+    cat = cats[idx]
+    title = cat.get("title","Категория")
+    unit = cat.get("unit","per_1000")
+    mult = float(data.get("pricing_multiplier", 1.0))
+    rows = [];
+    for i, item in enumerate(cat.get("items", [])):
+        label = f"{item.get('title','Услуга')} — {price_str(item.get('price',0), unit, mult)}"
+        rows.append([InlineKeyboardButton(label[:64], callback_data=f"item_{idx}_{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="catalog")])
+    await q.message.reply_html(f"<b>{title}</b>\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows))
 
-    if data == "menu_support":
-        await query.message.edit_text(
-            "✉ Напиши сообщение для поддержки.\n\n"
-            "Опиши проблему или вопрос максимально подробно.\n\n"
-            "Чтобы отменить, нажми кнопку ниже.",
-            reply_markup=support_cancel_keyboard(),
-        )
-        return SUPPORT_MESSAGE
+LINK, QTY = range(2)
 
-    if data == "menu_info":
-        text = (
-            "ℹ *О боте*\n\n"
-            "Этот бот демонстрирует простую логику магазина в Telegram:\n"
-            "— список товаров\n"
-            "— оформление заявок\n"
-            "— связь с поддержкой\n\n"
-            "Логику можно легко расширить под любые задачи."
-        )
-        await query.message.edit_markdown(text, reply_markup=main_menu_keyboard())
-        return
+async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, cidx, iidx = q.data.split("_"); cidx = int(cidx); iidx = int(iidx)
+    data = load_catalog()
+    try:
+        cat = data["categories"][cidx]; item = cat["items"][iidx]
+    except Exception:
+        await q.message.reply_text("Ошибка выбора услуги."); return ConversationHandler.END
+    context.user_data["order"] = {
+        "cat_idx": cidx, "item_idx": iidx,
+        "cat_title": cat.get("title","Категория"),
+        "unit": cat.get("unit","per_1000"),
+        "mult": float(data.get("pricing_multiplier",1.0)),
+        "title": item.get("title","Услуга"),
+        "price": float(item.get("price",0))
+    }
+    await q.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
+    return LINK
 
-    # product_<id> — просмотр товара
-    if data.startswith("product_"):
+async def order_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    link = (update.message.text or "").strip()
+    if not (link.startswith("http://") or link.startswith("https://") or ".com" in link or ".ru" in link):
+        await update.message.reply_text("Похоже, это не ссылка. Отправьте корректный URL:")
+        return LINK
+    context.user_data["order"]["link"] = link
+    await update.message.reply_text("🔢 Укажите количество (целое число):")
+    return QTY
+
+def compute_cost(price: float, unit: str, mult: float, qty: int) -> float:
+    base = 1000.0 if unit=="per_1000" else 100.0
+    return float(price) * float(mult) * (qty / base)
+
+def resolve_service_id(cat_title: str, item_title: str) -> int|None:
+    m = load_map()
+    return m.get(f"{cat_title}:::{item_title}")
+
+def ensure_qty_limits(service_id: int, qty: int) -> Tuple[int,int,int]:
+    try:
+        svcs = looksmm_services()
+        svc = next((s for s in svcs if int(s.get("service",0))==int(service_id)), None)
+        if not svc:
+            return qty, None, None
         try:
-            pid = int(data.split("_", maxsplit=1)[1])
-        except (ValueError, IndexError):
-            await query.message.edit_text(
-                "Ошибка: не получилось определить товар.",
-                reply_markup=products_keyboard(),
-            )
-            return
+            min_q = int(float(svc.get("min", 1)))
+            max_q = int(float(svc.get("max", 1000000)))
+        except Exception:
+            return qty, None, None
+        return max(min_q, min(qty, max_q)), min_q, max_q
+    except Exception:
+        return qty, None, None
 
-        product = PRODUCTS.get(pid)
-        if not product:
-            await query.message.edit_text(
-                "Такого товара больше нет.", reply_markup=products_keyboard()
-            )
-            return
+async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.message.text or "").strip()
+    if not txt.isdigit():
+        await update.message.reply_text("Количество должно быть целым числом. Введите ещё раз:")
+        return QTY
+    qty = int(txt)
+    if qty <= 0:
+        await update.message.reply_text("Количество должно быть больше 0. Введите ещё раз:")
+        return QTY
 
-        text = (
-            f"*{product['title']}*\n\n"
-            f"{product['description']}\n\n"
-            f"Цена: *{product['price']}₽*"
-        )
-        await query.message.edit_markdown(
-            text, reply_markup=product_action_keyboard(pid)
-        )
-        return
-
-
-# ================= CONVERSATIONHANDLER: ОФОРМЛЕНИЕ ЗАКАЗА =================
-
-
-async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Старт оформления заказа по нажатию кнопки '🛒 Оформить заказ'."""
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    if not data.startswith("buy_"):
-        await query.message.reply_text("Неизвестное действие.")
+    info = context.user_data.get("order", {})
+    sid = resolve_service_id(info.get("cat_title","Категория"), info.get("title","Услуга"))
+    if not sid:
+        await update.message.reply_text("Эта позиция не привязана к поставщику. Добавьте в service_map.json соответствующий service_id.")
         return ConversationHandler.END
+
+    adj_qty, min_q, max_q = await asyncio.to_thread(ensure_qty_limits, int(sid), qty)
+    if min_q is not None and qty < min_q:
+        await update.message.reply_text(f"Минимум для этой услуги: {min_q}. Отправьте новое количество:")
+        return QTY
+    if max_q is not None and qty > max_q:
+        await update.message.reply_text(f"Максимум для этой услуги: {max_q}. Отправьте новое количество:")
+        return QTY
+
+    cost = compute_cost(info["price"], info["unit"], info["mult"], qty)
+    uid = update.effective_user.id
+    bal = get_balance(uid)
+    if bal < cost:
+        await update.message.reply_text(
+            f"Недостаточно средств. Нужно {cost:.2f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup <сумма>"
+        )
+        return ConversationHandler.END
+
+    set_balance(uid, bal - cost)
 
     try:
-        product_id = int(data.split("_", maxsplit=1)[1])
-    except (ValueError, IndexError):
-        await query.message.reply_text("Ошибка: не удалось определить товар.")
-        return ConversationHandler.END
+        resp = await asyncio.to_thread(looksmm_add, int(sid), info["link"], qty)
+        order_id = resp.get("order") if isinstance(resp, dict) else str(resp)
+        append_order({
+            "user_id": uid,
+            "title": info["title"],
+            "service_id": int(sid),
+            "link": info["link"],
+            "qty": qty,
+            "cost": float(f"{cost:.2f}"),
+            "provider_order_id": order_id,
+        })
+        await update.message.reply_text(
+            f"✅ Заказ успешно оформлен!\n"
+            f"ID на BoostX5: {order_id}\n"
+            f"Списано: {cost:.2f} ₽"
+        )
+    except Exception as e:
+        set_balance(uid, bal)
+        await update.message.reply_text(f"Ошибка создания заказа: {e}")
 
-    product = PRODUCTS.get(product_id)
-    if not product:
-        await query.message.reply_text("Такого товара больше нет.")
-        return ConversationHandler.END
+    context.user_data.pop("order", None)
+    return ConversationHandler.END
 
-    context.user_data["order"] = {
-        "product_id": product_id,
-        "product_title": product["title"],
-        "price": product["price"],
-    }
+async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("order", None)
+    await update.message.reply_text("Оформление отменено.")
+    return ConversationHandler.END
 
+# Simple health server for Render
+async def _start_http_server(app_obj):
+    async def health(_request):
+        return web.Response(text="ok")
+    http_app = web.Application()
+    http_app.router.add_get("/", health)
+    http_app.router.add_get("/healthz", health)
+    port = int(os.getenv("PORT", "10000"))
+    runner = web.AppRunner(http_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 HTTP server started on 0.0.0.0:{port}")
+    app_obj.bot_data["http_runner"] = runner
+
+async def _post_init(app: Application):
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        print("✅ Webhook удалён, polling активирован.")
+    except Exception as e:
+        print(f"⚠️ Ошибка удаления webhook: {e}")
+    try:
+        await _start_http_server(app)
+    except Exception as e:
+        print(f"⚠️ HTTP server start error: {e}")
+
+# --------- Дополнительные обработчики BoostX (баланс, топап, поддержка) ---------
+
+async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
     text = (
-        f"🛒 *Оформление заказа*\n\n"
-        f"Товар: *{product['title']}* ({product['price']}₽)\n\n"
-        f"Для начала напиши *своё имя* (или как к тебе обращаться)."
+        "Чтобы пополнить баланс, используйте эту инструкцию:\n"
+        "Использование: <code>/topup &lt;сумма&gt;</code>\n"
+        f"Ссылка на оплату: {PAY_URL}\n\n"
+        "В сообщении к переводу укажите: ваш @username и номер счёта (invoice_id), "
+        "который бот пришлёт после команды /topup."
     )
+    await q.message.reply_html(text)
 
-    await query.message.edit_markdown(text, reply_markup=cancel_keyboard())
-    return ORDER_NAME
+SUPPORT_STATE = 10
 
+async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    text = (
+        "🆘 <b>Поддержка BoostX</b>\n\n"
+        "Опишите, пожалуйста, ваш вопрос одним сообщением. Я передам его администратору, "
+        "и ответ придёт сюда же.\n\n"
+        "Чтобы отменить, отправьте /cancel."
+    )
+    await q.message.reply_html(text)
+    return SUPPORT_STATE
 
-async def order_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name = (update.message.text or "").strip()
-    if not name:
+async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg_text = (update.message.text or "").strip()
+    if not msg_text:
+        await update.message.reply_text("Сообщение пустое. Отправьте, пожалуйста, текст вопроса.")
+        return SUPPORT_STATE
+
+    header = (
+        "❓ <b>Новое обращение в поддержку</b>\n\n"
+        f"От: @{user.username or 'без username'} (ID: <code>{user.id}</code>)\n\n"
+        f"{msg_text}\n\n"
+        f"Для ответа используйте: <code>/reply {user.id} &lt;текст ответа&gt;</code>"
+    )
+    try:
+        if ADMIN_ID:
+            await context.bot.send_message(ADMIN_ID, header, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+    await update.message.reply_text(
+        "Ваше сообщение отправлено в поддержку. Ответ придёт в этот чат, как только администратор его напишет."
+    )
+    return ConversationHandler.END
+
+async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Обращение в поддержку отменено.")
+    return ConversationHandler.END
+
+async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text("Использование: /reply [user_id] [сообщение]")
+        return
+    try:
+        target_id = int(args[0])
+    except Exception:
+        await update.message.reply_text("Неверный user_id.")
+        return
+    text = " ".join(args[1:])
+    try:
+        await context.bot.send_message(target_id, f"💬 Ответ от поддержки BoostX:\n\n{text}")
+        await update.message.reply_text("Ответ отправлен пользователю.")
+    except Exception:
         await update.message.reply_text(
-            "Пожалуйста, напиши имя текстом 🙏", reply_markup=cancel_keyboard()
+            "Не удалось отправить сообщение пользователю. Возможно, он не писал боту или заблокировал его."
         )
-        return ORDER_NAME
 
-    context.user_data.setdefault("order", {})
-    context.user_data["order"]["name"] = name
-
-    await update.message.reply_text(
-        "Отлично! Теперь напиши удобный контакт для связи:\n"
-        "• @username или\n"
-        "• номер телефона или\n"
-        "• любой другой удобный способ.",
-        reply_markup=cancel_keyboard(),
+def build_application():
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .defaults(Defaults(parse_mode=ParseMode.HTML))
+        .post_init(_post_init)
+        .build()
     )
-    return ORDER_CONTACT
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("topup", topup_cmd))
+    app.add_handler(CommandHandler("confirm_payment", confirm_payment_cmd))
+    app.add_handler(CommandHandler("reply", reply_cmd))
 
-
-async def order_get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    contact = (update.message.text or "").strip()
-    if not contact:
-        await update.message.reply_text(
-            "Пожалуйста, напиши контакт текстом 🙏", reply_markup=cancel_keyboard()
-        )
-        return ORDER_CONTACT
-
-    order = context.user_data.get("order", {})
-    order["contact"] = contact
-
-    user_tag = get_user_tag(update)
-    product_title = order.get("product_title", "Неизвестный товар")
-    price = order.get("price", "—")
-    name = order.get("name", "Не указано")
-
-    admin_text = (
-        "🆕 *Новая заявка*\n\n"
-        f"Покупатель: {user_tag}\n"
-        f"Имя: {name}\n"
-        f"Контакт: {contact}\n\n"
-        f"Товар: *{product_title}*\n"
-        f"Цена: *{price}₽*\n"
-    )
-
-    if ADMIN_CHAT_ID:
-        try:
-            await context.bot.send_message(
-                chat_id=int(ADMIN_CHAT_ID),
-                text=admin_text,
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            logger.error("Не удалось отправить заявку админу: %s", e)
-
-    await update.message.reply_text(
-        "Спасибо! 🙌\n\n"
-        "Твоя заявка отправлена. В ближайшее время с тобой свяжется админ.\n\n"
-        "Если что-то ещё понадобится — жми /start и выбирай пункт меню.",
-        reply_markup=main_menu_keyboard(),
-    )
-
-    context.user_data.pop("order", None)
-    return ConversationHandler.END
-
-
-async def order_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.message.edit_text(
-        "Оформление заказа отменено. Если передумаешь — просто выбери товар снова.",
-        reply_markup=main_menu_keyboard(),
-    )
-    context.user_data.pop("order", None)
-    return ConversationHandler.END
-
-
-async def order_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "Оформление заказа отменено. Если передумаешь — просто выбери товар снова.",
-        reply_markup=main_menu_keyboard(),
-    )
-    context.user_data.pop("order", None)
-    return ConversationHandler.END
-
-
-# ================= CONVERSATIONHANDLER: ПОДДЕРЖКА =================
-
-
-async def support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (update.message.text or "").strip()
-    if not text:
-        await update.message.reply_text(
-            "Пожалуйста, отправь текстовое сообщение для поддержки 🙏",
-            reply_markup=support_cancel_keyboard(),
-        )
-        return SUPPORT_MESSAGE
-
-    user_tag = get_user_tag(update)
-
-    admin_text = (
-        "✉ *Сообщение в поддержку*\n\n"
-        f"От: {user_tag}\n\n"
-        f"Текст:\n{text}"
-    )
-
-    if SUPPORT_CHAT_ID:
-        try:
-            await context.bot.send_message(
-                chat_id=int(SUPPORT_CHAT_ID),
-                text=admin_text,
-                parse_mode="Markdown",
-            )
-        except Exception as e:
-            logger.error("Не удалось отправить сообщение в поддержку: %s", e)
-
-    await update.message.reply_text(
-        "Спасибо! Твоё сообщение отправлено в поддержку. "
-        "Ответ придёт в ближайшее время.",
-        reply_markup=main_menu_keyboard(),
-    )
-
-    return ConversationHandler.END
-
-
-async def support_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.message.edit_text(
-        "Обращение в поддержку отменено.", reply_markup=main_menu_keyboard()
-    )
-    return ConversationHandler.END
-
-
-# ================= MAIN =================
-
-
-def build_application() -> Any:
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("catalog", show_catalog))
+    app.add_handler(CommandHandler("services", show_catalog))
+    app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog"))
+    app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
+    app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
+    app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
+    app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
 
     conv_order = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(order_entry, pattern=r"^buy_\d+$"),
-        ],
+        entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
         states={
-            ORDER_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_name)
-            ],
-            ORDER_CONTACT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_contact)
-            ],
+            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_link)],
+            1: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_qty)],
         },
-        fallbacks=[
-            CommandHandler("cancel", order_cancel_cmd),
-            CallbackQueryHandler(order_cancel_cb, pattern=r"^cancel_conv$"),
-        ],
-        per_message=True,
+        fallbacks=[CommandHandler("cancel", order_cancel)],
+        name="order_conv",
+        persistent=False,
     )
+    app.add_handler(conv_order)
 
     conv_support = ConversationHandler(
-        entry_points=[],
+        entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
         states={
-            SUPPORT_MESSAGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, support_message)
-            ],
+            SUPPORT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_collect)],
         },
-        fallbacks=[
-            CallbackQueryHandler(support_cancel_cb, pattern=r"^cancel_support$"),
-        ],
-        per_message=True,
+        fallbacks=[CommandHandler("cancel", support_cancel)],
+        name="support_conv",
+        persistent=False,
     )
+    app.add_handler(conv_support)
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-
-    application.add_handler(
-        CallbackQueryHandler(
-            menu_router,
-            pattern=r"^(menu_main|menu_products|menu_support|menu_info|product_\d+)$",
-        )
-    )
-
-    application.add_handler(CallbackQueryHandler(support_cancel_cb, pattern=r"^cancel_support$"))
-
-    application.add_handler(conv_order)
-    application.add_handler(conv_support)
-
-    return application
-
-
-def main() -> None:
-    application = build_application()
-
-    render_url = os.getenv("RENDER_EXTERNAL_URL")
-    port = int(os.getenv("PORT", "8000"))
-
-    if render_url:
-        webhook_url = f"{render_url}/{BOT_TOKEN}"
-        logger.info(f"Запуск в режиме WEBHOOK: {webhook_url} (порт {port})")
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=BOT_TOKEN,
-            webhook_url=webhook_url,
-            allowed_updates=Update.ALL_TYPES,
-        )
-    else:
-        logger.info("Запуск в режиме POLLING")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-
+    return app
 
 if __name__ == "__main__":
-    main()
+    if not BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN is not set")
+    print("🚀 Bot is running...")
+    application = build_application()
+    application.run_polling(drop_pending_updates=True)

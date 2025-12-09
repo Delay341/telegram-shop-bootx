@@ -8,7 +8,6 @@ from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardRemove,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -27,6 +26,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PAY_URL = os.getenv("PAY_URL", "")
+
+# Настройки вебхука для Render
+PORT = int(os.getenv("PORT", "10000"))
+# Можно явно задать WEBHOOK_URL в переменных окружения,
+# например: https://your-service.onrender.com/<BOT_TOKEN>
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -93,7 +98,10 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = InlineKeyboardMarkup(buttons)
     target = query.message if query else update.message
-    await target.reply_html("<b>📋 Каталог BoostX</b>\n\nВыберите категорию:", reply_markup=kb)
+    await target.reply_html(
+        "<b>📋 Каталог BoostX</b>\n\nВыберите категорию:",
+        reply_markup=kb,
+    )
 
 
 # ================================
@@ -126,6 +134,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #      ОФОРМЛЕНИЕ ЗАКАЗА
 # ================================
 LINK, QTY = range(2)
+
 
 async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -197,6 +206,7 @@ async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #         ПОДДЕРЖКА
 # ================================
 SUPPORT = range(1)
+
 
 async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -291,4 +301,21 @@ def build_application():
 
 
 if __name__ == "__main__":
-    build_application().run_polling()
+    application = build_application()
+
+    if not BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN is not set")
+
+    if not WEBHOOK_URL:
+        raise SystemExit("WEBHOOK_URL (или RENDER_EXTERNAL_URL) не задан")
+
+    # Полный URL для вебхука: WEBHOOK_URL + '/' + BOT_TOKEN
+    webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+    print(f"🚀 Starting BoostX bot via webhook on port {PORT}...")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=webhook_url,
+        drop_pending_updates=True,
+    )

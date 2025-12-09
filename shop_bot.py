@@ -1,6 +1,6 @@
 import logging
 import os
-import uuid  # ← добавил для генерации invoice_id
+import uuid  # для генерации invoice_id
 from typing import Dict, Any
 
 from telegram import (
@@ -200,7 +200,6 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if data == "menu_support":
-        # Запускаем ConversationHandler для поддержки (вход в состояние SUPPORT_MESSAGE)
         await query.message.edit_text(
             "✉ Напиши сообщение для поддержки.\n\n"
             "Опиши проблему или вопрос максимально подробно.\n\n"
@@ -249,9 +248,6 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # buy_<id> и прочие будут обрабатываться в ConversationHandler заказа
-    # (обновление — логика перенесена туда, см. conv_order)
-
 
 # ================= CONVERSATIONHANDLER: ОФОРМЛЕНИЕ ЗАКАЗА =================
 
@@ -263,7 +259,6 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     data = query.data
     if not data.startswith("buy_"):
-        # На всякий случай
         await query.message.reply_text("Неизвестное действие.")
         return ConversationHandler.END
 
@@ -278,7 +273,6 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await query.message.reply_text("Такого товара больше нет.")
         return ConversationHandler.END
 
-    # Сохраняем выбранный товар в user_data
     context.user_data["order"] = {
         "product_id": product_id,
         "product_title": product["title"],
@@ -327,7 +321,6 @@ async def order_get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     order = context.user_data.get("order", {})
     order["contact"] = contact
 
-    # Формируем текст заявки
     user_tag = get_user_tag(update)
     product_title = order.get("product_title", "Неизвестный товар")
     price = order.get("price", "—")
@@ -342,7 +335,6 @@ async def order_get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"Цена: *{price}₽*\n"
     )
 
-    # Отправляем админу
     if ADMIN_CHAT_ID:
         try:
             await context.bot.send_message(
@@ -353,20 +345,18 @@ async def order_get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             logger.error("Не удалось отправить заявку админу: %s", e)
 
-    # Подтверждение пользователю
     await update.message.reply_text(
         "Спасибо! 🙌\n\n"
         "Твоя заявка отправлена. В ближайшее время с тобой свяжется админ.\n\n"
         "Если что-то ещё понадобится — жми /start и выбирай пункт меню.",
+        reply_markup=main_menu_keyboard(),
     )
 
-    # Чистим данные заказа
     context.user_data.pop("order", None)
     return ConversationHandler.END
 
 
 async def order_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отмена заказа по кнопке."""
     query = update.callback_query
     await query.answer()
     await query.message.edit_text(
@@ -378,7 +368,6 @@ async def order_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def order_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отмена заказа по команде /cancel."""
     await update.message.reply_text(
         "Оформление заказа отменено. Если передумаешь — просто выбери товар снова.",
         reply_markup=main_menu_keyboard(),
@@ -391,7 +380,6 @@ async def order_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получаем сообщение от пользователя для поддержки."""
     text = (update.message.text or "").strip()
     if not text:
         await update.message.reply_text(
@@ -442,7 +430,6 @@ async def support_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def build_application() -> Any:
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # --- ConversationHandler для заказа ---
     conv_order = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(order_entry, pattern=r"^buy_\d+$"),
@@ -459,17 +446,11 @@ def build_application() -> Any:
             CommandHandler("cancel", order_cancel_cmd),
             CallbackQueryHandler(order_cancel_cb, pattern=r"^cancel_conv$"),
         ],
-        # per_message=True оставил как у тебя,
-        # чтобы не трогать остальную логику
         per_message=True,
     )
 
-    # --- ConversationHandler для поддержки ---
     conv_support = ConversationHandler(
-        entry_points=[
-            # Вход в этот диалог — через menu_router (callback_data="menu_support"),
-            # поэтому тут нет прямого entry_points, но мы укажем его в меню.
-        ],
+        entry_points=[],
         states={
             SUPPORT_MESSAGE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, support_message)
@@ -480,21 +461,19 @@ def build_application() -> Any:
         ],
         per_message=True,
     )
-    # ВАЖНО: conv_support добавим, но запускать состояние будем через возврат SUPPORT_MESSAGE в menu_router
 
-    # Команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
 
-    # Главное меню и товары
     application.add_handler(
-        CallbackQueryHandler(menu_router, pattern=r"^(menu_main|menu_products|menu_support|menu_info|product_\d+)$")
+        CallbackQueryHandler(
+            menu_router,
+            pattern=r"^(menu_main|menu_products|menu_support|menu_info|product_\d+)$",
+        )
     )
 
-    # Отдельно — обработчик отмены поддержки
     application.add_handler(CallbackQueryHandler(support_cancel_cb, pattern=r"^cancel_support$"))
 
-    # Conversation handlers
     application.add_handler(conv_order)
     application.add_handler(conv_support)
 
@@ -503,8 +482,23 @@ def build_application() -> Any:
 
 def main() -> None:
     application = build_application()
-    logger.info("Бот запущен (polling).")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    port = int(os.getenv("PORT", "8000"))
+
+    if render_url:
+        webhook_url = f"{render_url}/{BOT_TOKEN}"
+        logger.info(f"Запуск в режиме WEBHOOK: {webhook_url} (порт {port})")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=BOT_TOKEN,
+            webhook_url=webhook_url,
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        logger.info("Запуск в режиме POLLING")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":

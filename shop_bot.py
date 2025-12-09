@@ -1,13 +1,11 @@
-# -*- coding: utf-8 -*-
-import json
 import logging
 import os
-from dotenv import load_dotenv
+from typing import Dict, Any
 
 from telegram import (
     Update,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -17,305 +15,467 @@ from telegram.ext import (
     ConversationHandler,
     ContextTypes,
     filters,
-    Defaults,
 )
-from telegram.constants import ParseMode
 
-load_dotenv()
+# ================= НАСТРОЙКИ =================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-PAY_URL = os.getenv("PAY_URL", "")
+# Токен бота
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
 
-# Настройки вебхука для Render
-PORT = int(os.getenv("PORT", "10000"))
-# Можно явно задать WEBHOOK_URL в переменных окружения,
-# например: https://your-service.onrender.com/<BOT_TOKEN>
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "Не найден BOT_TOKEN/TELEGRAM_TOKEN в переменных окружения. "
+        "Добавь его в настройках Render."
+    )
+
+# ID админа / чата, куда будут уходить заявки и сообщения в поддержку
+# Можно указать один и тот же ID
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+SUPPORT_CHAT_ID = os.getenv("SUPPORT_CHAT_ID") or ADMIN_CHAT_ID
+
+# Простая «база товаров» (можно потом заменить на свою)
+PRODUCTS = {
+    1: {
+        "title": "Тестовый товар #1",
+        "description": "Описание первого товара. Например: доступ к паку файлов.",
+        "price": 199,  # в рублях (для текста, без реального платежного API)
+    },
+    2: {
+        "title": "Тестовый товар #2",
+        "description": "Описание второго товара. Можно заменить на любой.",
+        "price": 349,
+    },
+}
+
+
+# ================= ЛОГИРОВАНИЕ =================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
-
-# ================================
-#         ЗАГРУЗКА КАТАЛОГА
-# ================================
-def load_catalog():
-    try:
-        with open("config/config.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"categories": []}
+logger = logging.getLogger(__name__)
 
 
-# ================================
-#      КОМАНДА /START
-# ================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👋 Добро пожаловать в <b>BoostX</b> — платформу профессионального продвижения.\n\n"
-        "Мы помогаем развивать <b>Telegram</b>, <b>YouTube</b> и <b>TikTok</b> "
-        "с быстрыми и надёжными результатами.\n\n"
-        "Откройте каталог, чтобы выбрать услугу, или воспользуйтесь кнопками ниже "
-        "для управления балансом и связи с поддержкой."
+# ================= СОСТОЯНИЯ ДЛЯ CONVERSATIONHANDLER =================
+
+ORDER_NAME, ORDER_CONTACT = range(2)
+SUPPORT_MESSAGE = range(1)
+
+
+# ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton("📦 Товары", callback_data="menu_products")],
+        [InlineKeyboardButton("✉ Поддержка", callback_data="menu_support")],
+        [InlineKeyboardButton("ℹ О боте", callback_data="menu_info")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def products_keyboard() -> InlineKeyboardMarkup:
+    keyboard = []
+    for pid, item in PRODUCTS.items():
+        keyboard.append(
+            [InlineKeyboardButton(f"{item['title']} — {item['price']}₽", callback_data=f"product_{pid}")]
+        )
+    keyboard.append([InlineKeyboardButton("⬅ Назад", callback_data="menu_main")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def product_action_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton("🛒 Оформить заказ", callback_data=f"buy_{product_id}")],
+        [InlineKeyboardButton("⬅ Назад к товарам", callback_data="menu_products")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_conv")]]
     )
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
-        [
-            InlineKeyboardButton("💳 Баланс", callback_data="balance"),
-            InlineKeyboardButton("💳 Пополнить", callback_data="topup"),
-        ],
-        [InlineKeyboardButton("🆘 Поддержка", callback_data="support")],
-    ])
 
+def support_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("❌ Отмена", callback_data="cancel_support")]]
+    )
+
+
+def get_user_tag(update: Update) -> str:
+    user = update.effective_user
+    if not user:
+        return "Неизвестный пользователь"
+    username = f"@{user.username}" if user.username else ""
+    name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if username and name:
+        return f"{name} ({username}, id={user.id})"
+    elif username:
+        return f"{username} (id={user.id})"
+    elif name:
+        return f"{name} (id={user.id})"
+    return f"id={user.id}"
+
+
+# ================= ХЕНДЛЕРЫ КОМАНД =================
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (
+        "Привет! 👋\n\n"
+        "Это шоп-бот.\n"
+        "Через него можно посмотреть товары и отправить заявку на покупку.\n\n"
+        "Выбери нужный пункт меню ниже 👇"
+    )
     if update.message:
-        await update.message.reply_html(text, reply_markup=kb)
+        await update.message.reply_text(text, reply_markup=main_menu_keyboard())
     elif update.callback_query:
-        await update.callback_query.message.reply_html(text, reply_markup=kb)
+        await update.callback_query.message.edit_text(text, reply_markup=main_menu_keyboard())
 
 
-# ================================
-#         ПОКАЗ КАТЕГОРИЙ
-# ================================
-async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (
+        "❓ *Помощь*\n\n"
+        "Основные команды:\n"
+        "/start — главное меню\n"
+        "/help — это сообщение\n\n"
+        "Все заявки отправляются админу в личку/чат (настроено через переменные окружения)."
+    )
+    await update.message.reply_markdown(text)
+
+
+# ================= ОБРАБОТКА CALLBACK-КНОПОК (МЕНЮ) =================
+
+
+async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Роутер для простых callback_data меню."""
     query = update.callback_query
-    if query:
-        await query.answer()
+    await query.answer()
 
-    data = load_catalog()
-    cats = data.get("categories", [])
+    data = query.data
 
-    if not cats:
-        target = query.message if query else update.message
-        await target.reply_text("Каталог временно пуст.")
+    if data == "menu_main":
+        await query.message.edit_text(
+            "Главное меню 👇", reply_markup=main_menu_keyboard()
+        )
         return
 
-    buttons = [
-        [InlineKeyboardButton(cat.get("title", "Категория"), callback_data=f"cat_{i}")]
-        for i, cat in enumerate(cats)
-    ]
+    if data == "menu_products":
+        await query.message.edit_text(
+            "📦 Список доступных товаров:", reply_markup=products_keyboard()
+        )
+        return
 
-    kb = InlineKeyboardMarkup(buttons)
-    target = query.message if query else update.message
-    await target.reply_html(
-        "<b>📋 Каталог BoostX</b>\n\nВыберите категорию:",
-        reply_markup=kb,
-    )
+    if data == "menu_support":
+        # Запускаем ConversationHandler для поддержки (вход в состояние SUPPORT_MESSAGE)
+        await query.message.edit_text(
+            "✉ Напиши сообщение для поддержки.\n\n"
+            "Опиши проблему или вопрос максимально подробно.\n\n"
+            "Чтобы отменить, нажми кнопку ниже.",
+            reply_markup=support_cancel_keyboard(),
+        )
+        return SUPPORT_MESSAGE
 
+    if data == "menu_info":
+        text = (
+            "ℹ *О боте*\n\n"
+            "Этот бот демонстрирует простую логику магазина в Telegram:\n"
+            "— список товаров\n"
+            "— оформление заявок\n"
+            "— связь с поддержкой\n\n"
+            "Логику можно легко расширить под любые задачи."
+        )
+        await query.message.edit_markdown(text, reply_markup=main_menu_keyboard())
+        return
 
-# ================================
-#     ОТКРЫТИЕ КОНКРЕТНОЙ КАТЕГОРИИ
-# ================================
-async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    cat_id = int(q.data.split("_")[1])
-    data = load_catalog()
-    category = data["categories"][cat_id]
-
-    buttons = [
-        [
-            InlineKeyboardButton(
-                item["title"], callback_data=f"item_{cat_id}_{i}"
+    # product_<id> — просмотр товара
+    if data.startswith("product_"):
+        try:
+            pid = int(data.split("_", maxsplit=1)[1])
+        except (ValueError, IndexError):
+            await query.message.edit_text(
+                "Ошибка: не получилось определить товар.",
+                reply_markup=products_keyboard(),
             )
-        ]
-        for i, item in enumerate(category["items"])
-    ]
+            return
 
-    kb = InlineKeyboardMarkup(buttons)
-    await q.message.edit_html(
-        f"<b>{category['title']}</b>\nВыберите услугу:", reply_markup=kb
+        product = PRODUCTS.get(pid)
+        if not product:
+            await query.message.edit_text(
+                "Такого товара больше нет.", reply_markup=products_keyboard()
+            )
+            return
+
+        text = (
+            f"*{product['title']}*\n\n"
+            f"{product['description']}\n\n"
+            f"Цена: *{product['price']}₽*"
+        )
+        await query.message.edit_markdown(
+            text, reply_markup=product_action_keyboard(pid)
+        )
+        return
+
+    # buy_<id> и прочие будут обрабатываться в ConversationHandler заказа
+    # (обновление — логика перенесена туда, см. conv_order)
+
+
+# ================= CONVERSATIONHANDLER: ОФОРМЛЕНИЕ ЗАКАЗА =================
+
+
+async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Старт оформления заказа по нажатию кнопки '🛒 Оформить заказ'."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    if not data.startswith("buy_"):
+        # На всякий случай
+        await query.message.reply_text("Неизвестное действие.")
+        return ConversationHandler.END
+
+    try:
+        product_id = int(data.split("_", maxsplit=1)[1])
+    except (ValueError, IndexError):
+        await query.message.reply_text("Ошибка: не удалось определить товар.")
+        return ConversationHandler.END
+
+    product = PRODUCTS.get(product_id)
+    if not product:
+        await query.message.reply_text("Такого товара больше нет.")
+        return ConversationHandler.END
+
+    # Сохраняем выбранный товар в user_data
+    context.user_data["order"] = {
+        "product_id": product_id,
+        "product_title": product["title"],
+        "price": product["price"],
+    }
+
+    text = (
+        f"🛒 *Оформление заказа*\n\n"
+        f"Товар: *{product['title']}* ({product['price']}₽)\n\n"
+        f"Для начала напиши *своё имя* (или как к тебе обращаться)."
     )
 
-
-# ================================
-#      ОФОРМЛЕНИЕ ЗАКАЗА
-# ================================
-LINK, QTY = range(2)
+    await query.message.edit_markdown(text, reply_markup=cancel_keyboard())
+    return ORDER_NAME
 
 
-async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+async def order_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name = (update.message.text or "").strip()
+    if not name:
+        await update.message.reply_text(
+            "Пожалуйста, напиши имя текстом 🙏", reply_markup=cancel_keyboard()
+        )
+        return ORDER_NAME
 
-    _, cat_id, item_id = q.data.split("_")
-    cat_id = int(cat_id)
-    item_id = int(item_id)
-
-    context.user_data["order"] = {"cat_id": cat_id, "item_id": item_id}
-
-    await q.message.reply_text("Отправьте ссылку для накрутки:")
-    return LINK
-
-
-async def order_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["order"]["link"] = update.message.text
-    await update.message.reply_text("Введите количество:")
-    return QTY
-
-
-async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    qty = update.message.text
-    order = context.user_data["order"]
+    context.user_data.setdefault("order", {})
+    context.user_data["order"]["name"] = name
 
     await update.message.reply_text(
-        f"Ваш заказ оформлен!\n\n"
-        f"Категория ID: {order['cat_id']}\n"
-        f"Услуга ID: {order['item_id']}\n"
-        f"Ссылка: {order['link']}\n"
-        f"Количество: {qty}"
+        "Отлично! Теперь напиши удобный контакт для связи:\n"
+        "• @username или\n"
+        "• номер телефона или\n"
+        "• любой другой удобный способ.",
+        reply_markup=cancel_keyboard(),
+    )
+    return ORDER_CONTACT
+
+
+async def order_get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    contact = (update.message.text or "").strip()
+    if not contact:
+        await update.message.reply_text(
+            "Пожалуйста, напиши контакт текстом 🙏", reply_markup=cancel_keyboard()
+        )
+        return ORDER_CONTACT
+
+    order = context.user_data.get("order", {})
+    order["contact"] = contact
+
+    # Формируем текст заявки
+    user_tag = get_user_tag(update)
+    product_title = order.get("product_title", "Неизвестный товар")
+    price = order.get("price", "—")
+    name = order.get("name", "Не указано")
+
+    admin_text = (
+        "🆕 *Новая заявка*\n\n"
+        f"Покупатель: {user_tag}\n"
+        f"Имя: {name}\n"
+        f"Контакт: {contact}\n\n"
+        f"Товар: *{product_title}*\n"
+        f"Цена: *{price}₽*\n"
+    )
+
+    # Отправляем админу
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=int(ADMIN_CHAT_ID),
+                text=admin_text,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error("Не удалось отправить заявку админу: %s", e)
+
+    # Подтверждение пользователю
+    await update.message.reply_text(
+        "Спасибо! 🙌\n\n"
+        "Твоя заявка отправлена. В ближайшее время с тобой свяжется админ.\n\n"
+        "Если что-то ещё понадобится — жми /start и выбирай пункт меню.",
+    )
+
+    # Чистим данные заказа
+    context.user_data.pop("order", None)
+    return ConversationHandler.END
+
+
+async def order_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена заказа по кнопке."""
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text(
+        "Оформление заказа отменено. Если передумаешь — просто выбери товар снова.",
+        reply_markup=main_menu_keyboard(),
+    )
+    context.user_data.pop("order", None)
+    return ConversationHandler.END
+
+
+async def order_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена заказа по команде /cancel."""
+    await update.message.reply_text(
+        "Оформление заказа отменено. Если передумаешь — просто выбери товар снова.",
+        reply_markup=main_menu_keyboard(),
+    )
+    context.user_data.pop("order", None)
+    return ConversationHandler.END
+
+
+# ================= CONVERSATIONHANDLER: ПОДДЕРЖКА =================
+
+
+async def support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем сообщение от пользователя для поддержки."""
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text(
+            "Пожалуйста, отправь текстовое сообщение для поддержки 🙏",
+            reply_markup=support_cancel_keyboard(),
+        )
+        return SUPPORT_MESSAGE
+
+    user_tag = get_user_tag(update)
+
+    admin_text = (
+        "✉ *Сообщение в поддержку*\n\n"
+        f"От: {user_tag}\n\n"
+        f"Текст:\n{text}"
+    )
+
+    if SUPPORT_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=int(SUPPORT_CHAT_ID),
+                text=admin_text,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error("Не удалось отправить сообщение в поддержку: %s", e)
+
+    await update.message.reply_text(
+        "Спасибо! Твоё сообщение отправлено в поддержку. "
+        "Ответ придёт в ближайшее время.",
+        reply_markup=main_menu_keyboard(),
     )
 
     return ConversationHandler.END
 
 
-async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Оформление заказа отменено.")
-    return ConversationHandler.END
-
-
-# ================================
-#         БАЛАНС
-# ================================
-async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ваш баланс: 0₽")
-
-
-async def balance_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.message.reply_text("Ваш баланс: 0₽")
-
-
-# ================================
-#        ПОПОЛНЕНИЕ
-# ================================
-async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Ссылка на оплату: {PAY_URL}")
-
-
-async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.message.reply_html(f"Ссылка для пополнения:\n\n<code>{PAY_URL}</code>")
-
-
-# ================================
-#         ПОДДЕРЖКА
-# ================================
-SUPPORT = range(1)
-
-
-async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.message.reply_text("Напишите ваш вопрос одним сообщением:")
-    return SUPPORT
-
-
-async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    text = update.message.text
-
-    msg = (
-        f"🆘 Обращение в поддержку\n\n"
-        f"От: {user.full_name} (@{user.username})\n"
-        f"ID: {user.id}\n\n"
-        f"Сообщение:\n{text}"
+async def support_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text(
+        "Обращение в поддержку отменено.", reply_markup=main_menu_keyboard()
     )
-
-    if ADMIN_ID:
-        await context.bot.send_message(ADMIN_ID, msg)
-
-    await update.message.reply_text("Ваше сообщение отправлено. Ожидайте ответа.")
     return ConversationHandler.END
 
 
-async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Диалог отменён.")
-    return ConversationHandler.END
+# ================= MAIN =================
 
 
-# ================================
-#      КОМАНДА /REPLY ДЛЯ АДМИНА
-# ================================
-async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("Команда доступна только администратору!")
+def build_application() -> Any:
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    if len(context.args) < 2:
-        return await update.message.reply_text("Использование: /reply <user_id> <текст>")
-
-    user_id = int(context.args[0])
-    text = " ".join(context.args[1:])
-
-    await context.bot.send_message(user_id, text)
-    await update.message.reply_text("Ответ отправлен.")
-
-
-# ================================
-#         СБОРКА ПРИЛОЖЕНИЯ
-# ================================
-def build_application():
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .defaults(Defaults(parse_mode=ParseMode.HTML))
-        .build()
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("reply", reply_cmd))
-
-    app.add_handler(CommandHandler("balance", balance_cmd))
-    app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
-
-    app.add_handler(CommandHandler("topup", topup_cmd))
-    app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
-
-    app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog$"))
-    app.add_handler(CommandHandler("catalog", show_catalog))
-
-    app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
-
+    # --- ConversationHandler для заказа ---
     conv_order = ConversationHandler(
-        entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
+        entry_points=[
+            CallbackQueryHandler(order_entry, pattern=r"^buy_\d+$"),
+        ],
         states={
-            LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_link)],
-            QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_qty)],
+            ORDER_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_name)
+            ],
+            ORDER_CONTACT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_contact)
+            ],
         },
-        fallbacks=[CommandHandler("cancel", order_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", order_cancel_cmd),
+            CallbackQueryHandler(order_cancel_cb, pattern=r"^cancel_conv$"),
+        ],
+        # ОБНОВЛЕНИЕ: включено отслеживание per_message=True,
+        # чтобы корректно работали CallbackQueryHandler внутри ConversationHandler
+        per_message=True,
     )
-    app.add_handler(conv_order)
 
+    # --- ConversationHandler для поддержки ---
     conv_support = ConversationHandler(
-        entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
-        states={SUPPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_collect)]},
-        fallbacks=[CommandHandler("cancel", support_cancel)],
+        entry_points=[
+            # Вход в этот диалог — через menu_router (callback_data="menu_support"),
+            # поэтому тут нет прямого entry_points, но мы укажем его в меню.
+        ],
+        states={
+            SUPPORT_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, support_message)
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(support_cancel_cb, pattern=r"^cancel_support$"),
+        ],
+        per_message=True,  # тоже с обновлением per_message
     )
-    app.add_handler(conv_support)
+    # ВАЖНО: conv_support добавим, но запускать состояние будем через возврат SUPPORT_MESSAGE в menu_router
 
-    return app
+    # Команды
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+
+    # Главное меню и товары
+    application.add_handler(
+        CallbackQueryHandler(menu_router, pattern=r"^(menu_main|menu_products|menu_support|menu_info|product_\d+)$")
+    )
+
+    # Отдельно — обработчик отмены поддержки
+    application.add_handler(CallbackQueryHandler(support_cancel_cb, pattern=r"^cancel_support$"))
+
+    # Conversation handlers
+    application.add_handler(conv_order)
+    application.add_handler(conv_support)
+
+    return application
+
+
+def main() -> None:
+    application = build_application()
+    logger.info("Бот запущен (polling).")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    application = build_application()
-
-    if not BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN is not set")
-
-    if not WEBHOOK_URL:
-        raise SystemExit("WEBHOOK_URL (или RENDER_EXTERNAL_URL) не задан")
-
-    # Полный URL для вебхука: WEBHOOK_URL + '/' + BOT_TOKEN
-    webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
-    print(f"🚀 Starting BoostX bot via webhook on port {PORT}...")
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=webhook_url,
-        drop_pending_updates=True,
-    )
+    main()

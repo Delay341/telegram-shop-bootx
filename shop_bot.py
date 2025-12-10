@@ -244,7 +244,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = cat.get("title","Категория")
     unit = cat.get("unit","per_1000")
     mult = float(data.get("pricing_multiplier", 1.0))
-    rows = [];
+    rows = []
     for i, item in enumerate(cat.get("items", [])):
         label = f"{item.get('title','Услуга')} — {price_str(item.get('price',0), unit, mult)}"
         rows.append([InlineKeyboardButton(label[:64], callback_data=f"item_{idx}_{i}")])
@@ -479,6 +479,7 @@ def build_application():
         .post_init(_post_init)
         .build()
     )
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("balance", balance_cmd))
@@ -486,14 +487,16 @@ def build_application():
     app.add_handler(CommandHandler("confirm_payment", confirm_payment_cmd))
     app.add_handler(CommandHandler("reply", reply_cmd))
 
+    # Каталог / услуги
     app.add_handler(CommandHandler("catalog", show_catalog))
     app.add_handler(CommandHandler("services", show_catalog))
     app.add_handler(CallbackQueryHandler(show_catalog, pattern="^catalog"))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
-    app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
+    # 💡 support_entry тут больше не вешаем отдельно — им занимается conv_support
 
+    # Оформление заказов
     conv_order = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_entry, pattern="^item_")],
         states={
@@ -506,6 +509,7 @@ def build_application():
     )
     app.add_handler(conv_order)
 
+    # Поддержка
     conv_support = ConversationHandler(
         entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
         states={

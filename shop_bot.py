@@ -540,7 +540,6 @@ def build_application():
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
-    app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
 
     # Оформление заказов
     conv_order = ConversationHandler(
@@ -557,15 +556,14 @@ def build_application():
 
     # Поддержка
     conv_support = ConversationHandler(
-    entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
-    states={
-        SUPPORT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_collect)],
-    },
-    fallbacks=[CommandHandler("cancel", support_cancel)],
-    per_message=True,  # ✅ ДОБАВЬ ЭТО
-    name="support_conv",
-    persistent=False,
-)
+        entry_points=[CallbackQueryHandler(support_entry, pattern="^support$")],
+        states={
+            SUPPORT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_collect)],
+        },
+        fallbacks=[CommandHandler("cancel", support_cancel)],
+        name="support_conv",
+        persistent=False,
+    )
 
     app.add_handler(conv_support)
 

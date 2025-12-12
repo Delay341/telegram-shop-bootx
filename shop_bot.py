@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, json, asyncio, time, uuid
@@ -133,8 +134,6 @@ def price_str(price: float, unit: str, mult: float) -> str:
     tail = "за 1000" if unit=="per_1000" else "за 100"
     return f"{p:.2f} ₽ {tail}"
 
-# ---------- /start (ОБНОВЛЁННЫЙ ТЕКСТ БЕЗ ПОПОЛНЕНИЯ) ----------
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Добро пожаловать в <b>BoostX</b> — платформу профессионального продвижения.\n\n"
@@ -153,12 +152,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🆘 Поддержка", callback_data="support")]
     ])
 
-    if update.message:
-        await update.message.reply_html(text, reply_markup=kb)
-    elif update.callback_query:
-        await update.callback_query.message.reply_html(text, reply_markup=kb)
+    chat_id = update.effective_chat.id
 
-# ---------- дальше всё как было ----------
+    # 1) отправляем картинку (если файл есть в проекте)
+    image_paths = [
+        "assets/start.png",
+        "assets/welcome.png",
+        "Добро пожаловать.png",
+        "welcome.png",
+    ]
+    for p in image_paths:
+        try:
+            with open(p, "rb") as f:
+                await context.bot.send_photo(chat_id=chat_id, photo=f)
+            break
+        except FileNotFoundError:
+            continue
+        except Exception:
+            # если что-то пошло не так — просто пропускаем картинку
+            break
+
+    # 2) отправляем текст + кнопки
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -320,6 +340,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта позиция не привязана к поставщику. Добавьте в service_map.json соответствующий service_id.")
         return ConversationHandler.END
 
+    # validate limits
     adj_qty, min_q, max_q = await asyncio.to_thread(ensure_qty_limits, int(sid), qty)
     if min_q is not None and qty < min_q:
         await update.message.reply_text(f"Минимум для этой услуги: {min_q}. Отправьте новое количество:")
@@ -337,6 +358,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
+    # списание
     set_balance(uid, bal - cost)
 
     try:
@@ -357,6 +379,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Списано: {cost:.2f} ₽"
         )
     except Exception as e:
+        # откат баланса
         set_balance(uid, bal)
         await update.message.reply_text(f"Ошибка создания заказа: {e}")
 
@@ -394,9 +417,13 @@ async def _post_init(app: Application):
     except Exception as e:
         print(f"⚠️ HTTP server start error: {e}")
 
-# --------- Дополнительные обработчики BoostX (баланс, топап, поддержка) ---------
+
+
+# --------- Дополнительные обработчики BoostX (баланс, категории платформ, поддержка) ---------
+
 
 async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Инлайн-инструкция по пополнению баланса (аналог /topup без суммы)."""
     q = update.callback_query
     await q.answer()
     text = (
@@ -408,6 +435,11 @@ async def topup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await q.message.reply_html(text)
 
+
+
+
+
+# Поддержка и ответы админа
 SUPPORT_STATE = 10
 
 async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -422,6 +454,7 @@ async def support_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_html(text)
     return SUPPORT_STATE
 
+
 async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg_text = (update.message.text or "").strip()
@@ -429,6 +462,7 @@ async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сообщение пустое. Отправьте, пожалуйста, текст вопроса.")
         return SUPPORT_STATE
 
+    # Пересылаем вопрос администратору
     header = (
         "❓ <b>Новое обращение в поддержку</b>\n\n"
         f"От: @{user.username or 'без username'} (ID: <code>{user.id}</code>)\n\n"
@@ -439,6 +473,7 @@ async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ADMIN_ID:
             await context.bot.send_message(ADMIN_ID, header, parse_mode=ParseMode.HTML)
     except Exception:
+        # Не падаем, если админ недоступен
         pass
 
     await update.message.reply_text(
@@ -446,12 +481,16 @@ async def support_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
+
 async def support_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Обращение в поддержку отменено.")
     return ConversationHandler.END
 
+
 async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для администраторов: /reply user_id текст"""
     if update.effective_user.id != ADMIN_ID:
+        # тихо игнорируем, чтобы не светить админские команды
         return
     args = context.args or []
     if len(args) < 2:
@@ -494,7 +533,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
-    # 💡 support_entry тут больше не вешаем отдельно — им занимается conv_support
+    app.add_handler(CallbackQueryHandler(support_entry, pattern="^support$"))
 
     # Оформление заказов
     conv_order = ConversationHandler(

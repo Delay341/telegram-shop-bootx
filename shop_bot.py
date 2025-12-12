@@ -240,6 +240,13 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
+    # 1️⃣ картинка для кнопки «Каталог»
+    chat_id = update.effective_chat.id
+    await context.bot.send_photo(
+        chat_id=chat_id,
+        photo=open("assets/catalog.png", "rb")
+    )
+
     data = load_catalog()
     cats = data.get("categories", [])
     if not cats:

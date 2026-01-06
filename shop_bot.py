@@ -236,6 +236,34 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text(f"✅ Пополнение зачтено. Баланс +{inv['amount']:.2f} ₽")
 
+
+async def give_balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_html("Использование: <code>/give_balance &lt;user_id&gt; &lt;amount&gt;</code>")
+        return
+    try:
+        target_id = int(str(context.args[0]).strip())
+        amount = float(str(context.args[1]).replace(",", ".").strip())
+    except Exception:
+        await update.message.reply_text("Неверные параметры. Пример: /give_balance 123456789 50")
+        return
+    if amount == 0:
+        await update.message.reply_text("Сумма не должна быть 0.")
+        return
+
+    new_bal = add_balance(target_id, amount)
+
+    # уведомление получателю (если возможно)
+    try:
+        await context.bot.send_message(target_id, f"✅ Вам начислен баланс: {amount:+.2f} ₽\nТекущий баланс: {new_bal:.2f} ₽")
+    except Exception:
+        pass
+
+    await update.message.reply_text(f"✅ Начислено пользователю {target_id}: {amount:+.2f} ₽\nНовый баланс: {new_bal:.2f} ₽")
+
+
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
@@ -385,6 +413,25 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"ID на BoostX5: {order_id}\n"
             f"Списано: {cost:.2f} ₽"
         )
+
+        # уведомление админу о новом заказе
+        if ADMIN_ID:
+            try:
+                u = update.effective_user
+                uname = f"@{u.username}" if getattr(u, "username", None) else (u.full_name if u else "")
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    "🆕 Новый заказ\n"
+                    f"Пользователь: {uid} {uname}\n"
+                    f"Услуга: {info['title']}\n"
+                    f"service_id: {int(sid)}\n"
+                    f"Количество: {qty}\n"
+                    f"Сумма: {cost:.2f} ₽\n"
+                    f"Ссылка: {info['link']}\n"
+                    f"ID заказа (провайдер): {order_id}"
+                )
+            except Exception:
+                pass
     except Exception as e:
         # откат баланса
         set_balance(uid, bal)
@@ -531,6 +578,7 @@ def build_application():
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("topup", topup_cmd))
     app.add_handler(CommandHandler("confirm_payment", confirm_payment_cmd))
+    app.add_handler(CommandHandler("give_balance", give_balance_cmd))
     app.add_handler(CommandHandler("reply", reply_cmd))
 
     # Каталог / услуги

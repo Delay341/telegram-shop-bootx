@@ -142,6 +142,8 @@ def looksmm_add(service_id: int, link: str, quantity: int) -> Any:
 
 def price_str(price: float, unit: str, mult: float) -> str:
     p = float(price) * float(mult)
+    if unit == "package":
+        return f"{p:.0f} ₽ пакет"
     tail = "за 1000" if unit=="per_1000" else "за 100"
     return f"{p:.2f} ₽ {tail}"
 
@@ -372,7 +374,11 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "mult": float(data.get("pricing_multiplier",1.0)),
         "item_id": item.get("id"),
         "title": item.get("title","Услуга"),
-        "price": float(item.get("price",0))
+        "price": float(item.get("price",0)),
+        "item_type": item.get("type","single"),
+        "platform": item.get("platform", cat.get("title","Категория")),
+        "components": item.get("components", []),
+        "discount_percent": int(item.get("discount_percent", 0)),
     }
     await q.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
     return LINK
@@ -382,11 +388,49 @@ async def order_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (link.startswith("http://") or link.startswith("https://") or ".com" in link or ".ru" in link):
         await update.message.reply_text("Похоже, это не ссылка. Отправьте корректный URL:")
         return LINK
-    context.user_data["order"]["link"] = link
+
+    info = context.user_data.get("order", {})
+    info["link"] = link
+
+    # Комбо-набор: количество фиксированное, сразу подтверждение
+    if info.get("item_type") == "combo":
+        cost = float(compute_cost(info.get("price",0), info.get("unit","package"), info.get("mult",1.0), 1))
+        uid = update.effective_user.id
+        bal = get_balance(uid)
+        if bal < cost:
+            await update.message.reply_text(
+                f"Недостаточно средств. Нужно {cost:.0f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup <сумма>"
+            )
+            context.user_data.pop("order", None)
+            return ConversationHandler.END
+
+        info["cost"] = cost
+        comps = info.get("components", []) or []
+        comp_text = "\n".join([f"• {c.get('title','')} — <code>{int(c.get('qty',0))}</code>" for c in comps])
+        text = (
+            "✅ <b>Подтверждение заказа</b>\n\n"
+            f"• Пакет: <code>{info.get('title','КОМБО')}</code>\n"
+            "• Состав:\n"
+            f"{comp_text}\n\n"
+            f"• Ссылка: <code>{link}</code>\n"
+            f"• Стоимость: <code>{cost:.0f} ₽</code>\n"
+            f"• Баланс: <code>{bal:.2f} ₽</code>\n\n"
+            "Подтвердить оформление?"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_order")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_order")],
+        ])
+        await update.message.reply_html(text, reply_markup=kb)
+        return CONFIRM
+
+    # Обычный товар
     await update.message.reply_text("🔢 Укажите количество (целое число):")
     return QTY
 
 def compute_cost(price: float, unit: str, mult: float, qty: int) -> float:
+    if unit == "package":
+        return float(price) * float(mult)
     base = 1000.0 if unit=="per_1000" else 100.0
     return float(price) * float(mult) * (qty / base)
 
@@ -493,6 +537,102 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     info = context.user_data.get("order", {})
     uid = q.from_user.id
+
+    # Комбо-набор: создаём несколько заказов поставщику, списание один раз
+    if info.get("item_type") == "combo":
+        link = info.get("link", "")
+        cost = float(info.get("cost", 0.0))
+        comps = info.get("components", []) or []
+        if not link or not comps or cost <= 0:
+            await q.message.reply_text("Данные комбо-заказа не найдены. Откройте каталог и оформите заказ заново.")
+            context.user_data.pop("order", None)
+            return ConversationHandler.END
+
+        bal = get_balance(uid)
+        if bal < cost:
+            await q.message.reply_html(
+                f"Недостаточно средств. Нужно <code>{cost:.0f} ₽</code>, на балансе <code>{bal:.2f} ₽</code>."
+            )
+            context.user_data.pop("order", None)
+            return ConversationHandler.END
+
+        # списываем перед созданием
+        set_balance(uid, bal - cost)
+
+        provider_rows = []
+        try:
+            for c in comps:
+                sid = int(c.get("service_id", 0))
+                qty = int(c.get("qty", 0))
+                if sid <= 0 or qty <= 0:
+                    raise RuntimeError(f"Bad component: {c}")
+                res = await asyncio.to_thread(looksmm_add, sid, link, qty)
+                if isinstance(res, dict):
+                    provider_order_id = res.get("order")
+                else:
+                    provider_order_id = None
+                if not provider_order_id:
+                    raise RuntimeError(f"LooksMM response: {res}")
+                provider_rows.append({
+                    "service_id": sid,
+                    "qty": qty,
+                    "provider_order_id": provider_order_id,
+                })
+
+            order_id = str(uuid.uuid4())[:8]
+            append_order({
+                "order_id": order_id,
+                "user_id": uid,
+                "username": q.from_user.username or "",
+                "title": info.get("title", "КОМБО"),
+                "type": "combo",
+                "cost": cost,
+                "link": link,
+                "items": provider_rows,
+            })
+
+            # уведомление админу
+            try:
+                lines = "\n".join([f"{r['service_id']} x {r['qty']} -> {r['provider_order_id']}" for r in provider_rows])
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "🆕 Новый КОМБО-заказ\n\n"
+                        f"User: {uid} (@{q.from_user.username or '-'})\n"
+                        f"Пакет: {info.get('title','КОМБО')}\n"
+                        f"cost: {cost:.0f} ₽\n"
+                        f"link: {link}\n\n"
+                        f"{lines}\n"
+                        f"order_id: {order_id}"
+                    )
+                )
+            except Exception:
+                pass
+
+            # статус-экран
+            items_txt = "\n".join([
+                f"• <code>{r['service_id']}</code> × <code>{r['qty']}</code> → <code>{r['provider_order_id']}</code>" for r in provider_rows
+            ])
+            status_text = (
+                "✅ <b>Комбо-заказ создан</b>\n\n"
+                f"• Пакет: <code>{info.get('title','КОМБО')}</code>\n"
+                f"• Ссылка: <code>{link}</code>\n"
+                f"• Списано: <code>{cost:.0f} ₽</code>\n"
+                f"• Order ID: <code>{order_id}</code>\n\n"
+                "• Заказы поставщика:\n"
+                f"{items_txt}"
+            )
+            status_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("👤 Профиль", callback_data="profile"), InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
+                [InlineKeyboardButton("🆘 Поддержка", callback_data="support")],
+            ])
+            await q.message.reply_html(status_text, reply_markup=status_kb)
+        except Exception as e:
+            set_balance(uid, bal)
+            await q.message.reply_text(f"Ошибка создания комбо-заказа: {e}")
+
+        context.user_data.pop("order", None)
+        return ConversationHandler.END
 
     sid = int(info.get("service_id", 0))
     qty = int(info.get("qty", 0))

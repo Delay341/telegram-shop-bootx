@@ -4,6 +4,249 @@
   "currency": "RUB",
   "categories": [
     {
+      "id": "combo",
+      "title": "КОМБО НАБОРЫ 🎁",
+      "unit": "package",
+      "items": [
+        {
+          "id": "combo_tg_start",
+          "title": "Telegram START 🎁",
+          "type": "combo",
+          "platform": "Telegram",
+          "price": 5.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 1273,
+              "title": "Telegram Подписчики [Без гарантии ⛔️]",
+              "qty": 1000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 897,
+              "title": "Telegram Просмотры на пост [Быстрые]",
+              "qty": 5000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_tg_growth",
+          "title": "Telegram GROWTH 📈",
+          "type": "combo",
+          "platform": "Telegram",
+          "price": 85.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 105,
+              "title": "Telegram Подписчики [30 дней без отписок]",
+              "qty": 1000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 896,
+              "title": "Telegram Просмотры на пост [Медленные]",
+              "qty": 10000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_tg_pro",
+          "title": "Telegram PRO 🔥",
+          "type": "combo",
+          "platform": "Telegram",
+          "price": 234.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 106,
+              "title": "Telegram Подписчики [60 дней без отписок]",
+              "qty": 2000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 896,
+              "title": "Telegram Просмотры на пост [Медленные]",
+              "qty": 10000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 1226,
+              "title": "Telegram Реакции Микс позитивных [👍🤩🎉🔥❤️🥰👏🏻] [Без гарантии ⛔️]",
+              "qty": 1000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_tg_bot",
+          "title": "Telegram BOT BOOST 🤖",
+          "type": "combo",
+          "platform": "Telegram",
+          "price": 806.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 1297,
+              "title": "Telegram Старт бота",
+              "qty": 5000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 1405,
+              "title": "Telegram Старт бота [РУ] [Для вывода в топ]",
+              "qty": 1000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_yt_start",
+          "title": "YouTube START ▶️",
+          "type": "combo",
+          "platform": "YouTube",
+          "price": 673.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 295,
+              "title": "YouTube Подписчики [Без гарантии ⛔️]",
+              "qty": 500,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 1602,
+              "title": "YouTube Просмотры [Медленные]",
+              "qty": 5000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_yt_shorts",
+          "title": "YouTube SHORTS ⚡",
+          "type": "combo",
+          "platform": "YouTube",
+          "price": 1810.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 1248,
+              "title": "YouTube Просмотры [Shorts]",
+              "qty": 10000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 1242,
+              "title": "YouTube Лайки [Shorts] [Без гарантии ⛔️]",
+              "qty": 1000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_yt_pro",
+          "title": "YouTube PRO 🎬",
+          "type": "combo",
+          "platform": "YouTube",
+          "price": 3324.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 1779,
+              "title": "YouTube Подписчики [Офферы]",
+              "qty": 1000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 1739,
+              "title": "YouTube Просмотры [Офферы] [30 секунд]",
+              "qty": 5000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_tt_start",
+          "title": "TikTok START 🎵",
+          "type": "combo",
+          "platform": "TikTok",
+          "price": 45.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 1436,
+              "title": "TikTok Подписчики [Медленные]",
+              "qty": 1000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 50,
+              "title": "TikTok Лайки [Без гарантии ⛔️]",
+              "qty": 2000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_tt_viral",
+          "title": "TikTok VIRAL 🚀",
+          "type": "combo",
+          "platform": "TikTok",
+          "price": 132.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 1428,
+              "title": "TikTok Просмотры + 20% Лайков",
+              "qty": 10000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 1436,
+              "title": "TikTok Подписчики [Медленные]",
+              "qty": 1000,
+              "unit": "per_1000"
+            }
+          ]
+        },
+        {
+          "id": "combo_tt_pro",
+          "title": "TikTok PRO 🔥",
+          "type": "combo",
+          "platform": "TikTok",
+          "price": 596.0,
+          "unit": "package",
+          "discount_percent": 20,
+          "components": [
+            {
+              "service_id": 1431,
+              "title": "TikTok Просмотры + 50% Лайков",
+              "qty": 20000,
+              "unit": "per_1000"
+            },
+            {
+              "service_id": 1056,
+              "title": "TikTok Подписчики [Медленные]",
+              "qty": 2000,
+              "unit": "per_1000"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "telegram",
       "title": "Telegram",
       "unit": "per_1000",

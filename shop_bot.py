@@ -380,7 +380,16 @@ def compute_cost(price: float, unit: str, mult: float, qty: int) -> float:
 
 def resolve_service_id(cat_title: str, item_title: str) -> int|None:
     m = load_map()
-    return m.get(f"{cat_title}:::{item_title}")
+    # Primary: exact match by category + item (legacy behavior)
+    sid = m.get(f"{cat_title}:::{item_title}")
+    if sid is not None:
+        return sid
+    # Fallback: match by item title only (allows changing categories without breaking mapping)
+    needle = f":::{(item_title or '').strip()}"
+    for k, v in m.items():
+        if isinstance(k, str) and k.endswith(needle):
+            return v
+    return None
 
 def ensure_qty_limits(service_id: int, qty: int) -> Tuple[int,int,int]:
     try:

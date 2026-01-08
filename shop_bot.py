@@ -254,6 +254,18 @@ async def profile_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await q.message.reply_html(text, reply_markup=kb)
 
+
+async def unknown_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Safety net: always answer unknown callback queries to avoid endless "loading" in Telegram UI."""
+    q = update.callback_query
+    if not q:
+        return
+    try:
+        await q.answer("Меню обновилось. Если кнопка не сработала — нажмите /start или откройте Каталог заново.")
+    except Exception:
+        # Ignore any errors here; this handler exists only to stop the loading spinner.
+        pass
+
 async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     if not args:
@@ -886,6 +898,8 @@ def build_application():
             2: [CallbackQueryHandler(order_confirm, pattern="^confirm_order$"), CallbackQueryHandler(order_cancel_cb, pattern="^cancel_order$")],
         },
         fallbacks=[CommandHandler("cancel", order_cancel)],
+        allow_reentry=True,
+        per_message=True,
         name="order_conv",
         persistent=False,
     )
@@ -898,11 +912,16 @@ def build_application():
             SUPPORT_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_collect)],
         },
         fallbacks=[CommandHandler("cancel", support_cancel)],
+        allow_reentry=True,
+        per_message=True,
         name="support_conv",
         persistent=False,
     )
 
     app.add_handler(conv_support)
+
+    # Safety net: answer any unexpected callback to stop Telegram "loading" spinner
+    app.add_handler(CallbackQueryHandler(unknown_callback))
 
     return app
 

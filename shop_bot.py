@@ -525,7 +525,7 @@ async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise RuntimeError(f"LooksMM response: {res}")
 
         order_id = str(uuid.uuid4())[:8]
-        save_order({
+        append_order({
             "order_id": order_id,
             "user_id": uid,
             "username": q.from_user.username or "",

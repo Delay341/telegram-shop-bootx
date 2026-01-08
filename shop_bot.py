@@ -144,7 +144,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
+        [InlineKeyboardButton("📋 Каталог", callback_data="catalog"), InlineKeyboardButton("👤 Профиль", callback_data="profile")],
         [
             InlineKeyboardButton("💳 Баланс", callback_data="balance"),
             InlineKeyboardButton("💳 Пополнить", callback_data="topup")
@@ -201,6 +201,46 @@ async def balance_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     await q.message.reply_html(f"💳 <b>Ваш баланс:</b> <code>{get_balance(uid):.2f} ₽</code>")
 
+async def profile_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    username = q.from_user.username or "-"
+    bal = get_balance(uid)
+
+    rows = _read_json(ORDERS_FILE, [])
+    user_orders = [o for o in rows if int(o.get("user_id", 0)) == int(uid)]
+    count = len(user_orders)
+    last = max(user_orders, key=lambda o: int(o.get("created_at", 0)), default=None)
+
+    text = (
+        "👤 <b>Ваш профиль</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"🔗 Username: <code>@{username}</code>\n"
+        f"💳 Баланс: <code>{bal:.2f} ₽</code>\n"
+        f"📦 Заказов: <code>{count}</code>\n"
+    )
+    if last:
+        oid = last.get("order_id", "-")
+        provider = last.get("provider_order_id", last.get("provider_order", "-"))
+        title = last.get("title", last.get("service_title", "Услуга"))
+        text += (
+            "\n<b>Последний заказ</b>\n"
+            f"• Услуга: <code>{title}</code>\n"
+            f"• ID: <code>{oid}</code>\n"
+            f"• Provider ID: <code>{provider}</code>\n"
+        )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
+        [
+            InlineKeyboardButton("💳 Баланс", callback_data="balance"),
+            InlineKeyboardButton("💳 Пополнить", callback_data="topup"),
+        ],
+        [InlineKeyboardButton("🆘 Поддержка", callback_data="support")],
+    ])
+    await q.message.reply_html(text, reply_markup=kb)
+
 async def topup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     if not args:
@@ -236,33 +276,30 @@ async def confirm_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text(f"✅ Пополнение зачтено. Баланс +{inv['amount']:.2f} ₽")
 
-
 async def give_balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_html("Использование: <code>/give_balance &lt;user_id&gt; &lt;amount&gt;</code>")
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text("Использование: /give_balance <user_id> <amount>")
         return
     try:
-        target_id = int(str(context.args[0]).strip())
-        amount = float(str(context.args[1]).replace(",", ".").strip())
+        target_id = int(args[0])
+        amount = float(str(args[1]).replace(",", "."))
     except Exception:
-        await update.message.reply_text("Неверные параметры. Пример: /give_balance 123456789 50")
-        return
-    if amount == 0:
-        await update.message.reply_text("Сумма не должна быть 0.")
+        await update.message.reply_text("Неверные параметры. Пример: /give_balance 123456 50")
         return
 
     new_bal = add_balance(target_id, amount)
+    await update.message.reply_text(f"✅ Начислено {amount:.2f} ₽ пользователю {target_id}. Новый баланс: {new_bal:.2f} ₽")
 
-    # уведомление получателю (если возможно)
     try:
-        await context.bot.send_message(target_id, f"✅ Вам начислен баланс: {amount:+.2f} ₽\nТекущий баланс: {new_bal:.2f} ₽")
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=f"🎁 Вам начислен баланс: +{amount:.2f} ₽\nВаш баланс: {new_bal:.2f} ₽"
+        )
     except Exception:
         pass
-
-    await update.message.reply_text(f"✅ Начислено пользователю {target_id}: {amount:+.2f} ₽\nНовый баланс: {new_bal:.2f} ₽")
-
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -301,12 +338,13 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mult = float(data.get("pricing_multiplier", 1.0))
     rows = []
     for i, item in enumerate(cat.get("items", [])):
-        label = f"{item.get('title','Услуга')} — {price_str(item.get('price',0), unit, mult)}"
+        item_unit = item.get("unit", unit)
+        label = f"{item.get('title','Услуга')} — {price_str(item.get('price',0), item_unit, mult)}"
         rows.append([InlineKeyboardButton(label[:64], callback_data=f"item_{idx}_{i}")])
     rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="catalog")])
     await q.message.reply_html(f"<b>{title}</b>\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows))
 
-LINK, QTY = range(2)
+LINK, QTY, CONFIRM = range(3)
 
 async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -319,7 +357,7 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"] = {
         "cat_idx": cidx, "item_idx": iidx,
         "cat_title": cat.get("title","Категория"),
-        "unit": cat.get("unit","per_1000"),
+        "unit": item.get("unit", cat.get("unit","per_1000")),
         "mult": float(data.get("pricing_multiplier",1.0)),
         "title": item.get("title","Услуга"),
         "price": float(item.get("price",0))
@@ -384,6 +422,8 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Максимум для этой услуги: {max_q}. Отправьте новое количество:")
         return QTY
 
+    # сохраняем данные и просим подтверждение
+    qty = int(adj_qty)
     cost = compute_cost(info["price"], info["unit"], info["mult"], qty)
     uid = update.effective_user.id
     bal = get_balance(uid)
@@ -391,53 +431,128 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Недостаточно средств. Нужно {cost:.2f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup <сумма>"
         )
+        context.user_data.pop("order", None)
         return ConversationHandler.END
 
-    # списание
+    info["service_id"] = int(sid)
+    info["qty"] = int(qty)
+    info["cost"] = float(cost)
+    context.user_data["order"] = info
+
+    text = (
+        "✅ <b>Подтверждение заказа</b>\n\n"
+        f"• Услуга: <code>{info.get('title','Услуга')}</code>\n"
+        f"• Кол-во: <code>{qty}</code>\n"
+        f"• Ссылка: <code>{info.get('link','')}</code>\n"
+        f"• Стоимость: <code>{cost:.2f} ₽</code>\n"
+        f"• Баланс: <code>{bal:.2f} ₽</code>\n\n"
+        "Подтвердить оформление?"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_order")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_order")],
+    ])
+    await update.message.reply_html(text, reply_markup=kb)
+    return CONFIRM
+
+async def order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    info = context.user_data.get("order", {})
+    uid = q.from_user.id
+
+    sid = int(info.get("service_id", 0))
+    qty = int(info.get("qty", 0))
+    cost = float(info.get("cost", 0.0))
+    link = info.get("link", "")
+
+    if not sid or qty <= 0 or not link:
+        await q.message.reply_text("Данные заказа не найдены. Откройте каталог и оформите заказ заново.")
+        context.user_data.pop("order", None)
+        return ConversationHandler.END
+
+    bal = get_balance(uid)
+    if bal < cost:
+        await q.message.reply_html(
+            f"Недостаточно средств. Нужно <code>{cost:.2f} ₽</code>, на балансе <code>{bal:.2f} ₽</code>."
+        )
+        context.user_data.pop("order", None)
+        return ConversationHandler.END
+
+    # списываем перед созданием
     set_balance(uid, bal - cost)
 
     try:
-        resp = await asyncio.to_thread(looksmm_add, int(sid), info["link"], qty)
-        order_id = resp.get("order") if isinstance(resp, dict) else str(resp)
-        append_order({
+        res = await asyncio.to_thread(looksmm_add, sid, link, qty)
+        if isinstance(res, dict):
+            provider_order_id = res.get("order")
+        else:
+            provider_order_id = None
+        if not provider_order_id:
+            raise RuntimeError(f"LooksMM response: {res}")
+
+        order_id = str(uuid.uuid4())[:8]
+        save_order({
+            "order_id": order_id,
             "user_id": uid,
-            "title": info["title"],
-            "service_id": int(sid),
-            "link": info["link"],
+            "username": q.from_user.username or "",
+            "title": info.get("title","Услуга"),
+            "service_id": sid,
             "qty": qty,
-            "cost": float(f"{cost:.2f}"),
-            "provider_order_id": order_id,
+            "cost": cost,
+            "link": link,
+            "provider_order_id": provider_order_id,
         })
-        await update.message.reply_text(
-            f"✅ Заказ успешно оформлен!\n"
-            f"ID на BoostX5: {order_id}\n"
-            f"Списано: {cost:.2f} ₽"
-        )
 
         # уведомление админу о новом заказе
-        if ADMIN_ID:
-            try:
-                u = update.effective_user
-                uname = f"@{u.username}" if getattr(u, "username", None) else (u.full_name if u else "")
-                await context.bot.send_message(
-                    ADMIN_ID,
-                    "🆕 Новый заказ\n"
-                    f"Пользователь: {uid} {uname}\n"
-                    f"Услуга: {info['title']}\n"
-                    f"service_id: {int(sid)}\n"
-                    f"Количество: {qty}\n"
-                    f"Сумма: {cost:.2f} ₽\n"
-                    f"Ссылка: {info['link']}\n"
-                    f"ID заказа (провайдер): {order_id}"
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🆕 Новый заказ\n\n"
+                    f"User: {uid} (@{q.from_user.username or '-'})\n"
+                    f"Услуга: {info.get('title','Услуга')}\n"
+                    f"service_id: {sid}\n"
+                    f"qty: {qty}\n"
+                    f"cost: {cost:.2f} ₽\n"
+                    f"link: {link}\n"
+                    f"provider_order_id: {provider_order_id}\n"
+                    f"order_id: {order_id}"
                 )
-            except Exception:
-                pass
+            )
+        except Exception:
+            pass
+
+        # статус-экран после оформления
+        status_text = (
+            "✅ <b>Заказ создан!</b>\n\n"
+            f"• Услуга: <code>{info.get('title','Услуга')}</code>\n"
+            f"• Кол-во: <code>{qty}</code>\n"
+            f"• Списано: <code>{cost:.2f} ₽</code>\n"
+            f"• ID заказа: <code>{order_id}</code>\n"
+            f"• Provider ID: <code>{provider_order_id}</code>\n"
+        )
+        status_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👤 Профиль", callback_data="profile"), InlineKeyboardButton("📋 Каталог", callback_data="catalog")],
+            [InlineKeyboardButton("🆘 Поддержка", callback_data="support")],
+        ])
+        await q.message.reply_html(status_text, reply_markup=status_kb)
+
     except Exception as e:
         # откат баланса
         set_balance(uid, bal)
-        await update.message.reply_text(f"Ошибка создания заказа: {e}")
+        await q.message.reply_text(f"Ошибка создания заказа: {e}")
 
     context.user_data.pop("order", None)
+    return ConversationHandler.END
+
+
+async def order_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data.pop("order", None)
+    await q.message.reply_text("Оформление отменено.")
     return ConversationHandler.END
 
 async def order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -588,6 +703,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
+    app.add_handler(CallbackQueryHandler(profile_cb, pattern="^profile$"))
 
     # Оформление заказов
     conv_order = ConversationHandler(
@@ -595,6 +711,7 @@ def build_application():
         states={
             0: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_link)],
             1: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_qty)],
+            2: [CallbackQueryHandler(order_confirm, pattern="^confirm_order$"), CallbackQueryHandler(order_cancel_cb, pattern="^cancel_order$")],
         },
         fallbacks=[CommandHandler("cancel", order_cancel)],
         name="order_conv",

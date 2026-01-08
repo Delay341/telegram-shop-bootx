@@ -46,18 +46,29 @@ def load_catalog() -> Dict[str, Any]:
     return data
 
 def load_map() -> Dict[str, int]:
-    raw = _read_json(MAP_PATH, {"map":[]})
-    mapping = {}
-    for row in raw.get("map", []):
-        cat = (row.get("cat") or "").strip()
-        item = (row.get("item") or "").strip()
-        sid = row.get("service_id")
-        if cat and item and sid:
-            key = f"{cat}:::{item}"
+    raw = _read_json(MAP_PATH, {})
+    # New format: {"items": {"telegram_1273": 1273, ...}}
+    items = raw.get("items")
+    if isinstance(items, dict):
+        mapping: Dict[str, int] = {}
+        for k, v in items.items():
             try:
-                mapping[key] = int(sid)
+                mapping[str(k).strip()] = int(v)
             except Exception:
-                pass
+                continue
+        return mapping
+
+    # Legacy format: {"map": [{"cat": "...", "item": "...", "service_id": 123}, ...]}
+    mapping: Dict[str, int] = {}
+    for row in (raw.get("map") or []):
+        try:
+            cat = (row.get("cat") or "").strip()
+            item = (row.get("item") or "").strip()
+            sid = row.get("service_id")
+            if cat and item and sid:
+                mapping[f"{cat}:::{item}"] = int(sid)
+        except Exception:
+            continue
     return mapping
 
 def get_balance(user_id: int) -> float:
@@ -359,6 +370,7 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "cat_title": cat.get("title","Категория"),
         "unit": item.get("unit", cat.get("unit","per_1000")),
         "mult": float(data.get("pricing_multiplier",1.0)),
+        "item_id": item.get("id"),
         "title": item.get("title","Услуга"),
         "price": float(item.get("price",0))
     }
@@ -378,17 +390,28 @@ def compute_cost(price: float, unit: str, mult: float, qty: int) -> float:
     base = 1000.0 if unit=="per_1000" else 100.0
     return float(price) * float(mult) * (qty / base)
 
-def resolve_service_id(cat_title: str, item_title: str) -> int|None:
+def resolve_service_id(cat_title: str, item_title: str, item_id: str | None = None) -> int|None:
     m = load_map()
-    # Primary: exact match by category + item (legacy behavior)
+
+    # Preferred: lookup by internal item id/code (stable even if titles/categories change)
+    if item_id:
+        sid = m.get(str(item_id).strip())
+        if sid is not None:
+            return int(sid)
+
+    # Legacy: exact match by category + item title
     sid = m.get(f"{cat_title}:::{item_title}")
     if sid is not None:
-        return sid
-    # Fallback: match by item title only (allows changing categories without breaking mapping)
+        return int(sid)
+
+    # Legacy fallback: match by item title only
     needle = f":::{(item_title or '').strip()}"
     for k, v in m.items():
         if isinstance(k, str) and k.endswith(needle):
-            return v
+            try:
+                return int(v)
+            except Exception:
+                return None
     return None
 
 def ensure_qty_limits(service_id: int, qty: int) -> Tuple[int,int,int]:
@@ -417,7 +440,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return QTY
 
     info = context.user_data.get("order", {})
-    sid = resolve_service_id(info.get("cat_title","Категория"), info.get("title","Услуга"))
+    sid = resolve_service_id(info.get("cat_title","Категория"), info.get("title","Услуга"), info.get("item_id"))
     if not sid:
         await update.message.reply_text("Эта позиция не привязана к поставщику. Добавьте в service_map.json соответствующий service_id.")
         return ConversationHandler.END

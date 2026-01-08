@@ -899,7 +899,7 @@ def build_application():
         },
         fallbacks=[CommandHandler("cancel", order_cancel)],
         allow_reentry=True,
-        per_message=True,
+        per_message=False,
         name="order_conv",
         persistent=False,
     )
@@ -913,7 +913,7 @@ def build_application():
         },
         fallbacks=[CommandHandler("cancel", support_cancel)],
         allow_reentry=True,
-        per_message=True,
+        per_message=False,
         name="support_conv",
         persistent=False,
     )

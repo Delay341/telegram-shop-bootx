@@ -392,6 +392,27 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "components": item.get("components", []),
         "discount_percent": int(item.get("discount_percent", 0)),
     }
+    # Если это комбо-набор — показываем состав до ввода ссылки
+    if context.user_data["order"].get("item_type") == "combo":
+        o = context.user_data["order"]
+        comps = o.get("components", []) or []
+        lines = [f"🎁 Вы выбрали: {o.get('title','Комбо-набор')}", "", "📦 Состав набора:"]
+        for c in comps:
+            c_title = c.get("title", "Услуга")
+            c_qty = c.get("qty", "")
+            lines.append(f"• {c_title} — {c_qty}")
+        cost_preview = float(compute_cost(float(o.get("price", 0)), o.get("unit","package"), float(o.get("mult",1.0)), 1))
+        uid = update.effective_user.id
+        bal = get_balance(uid)
+        disc = int(o.get("discount_percent", 0))
+        if disc:
+            lines.append("")
+            lines.append(f"✅ Выгода: -{disc}% уже учтена")
+        lines.append(f"💰 Стоимость пакета: {cost_preview:.0f} ₽")
+        lines.append(f"👛 Ваш баланс: {bal:.2f} ₽")
+        await q.message.reply_text("
+".join(lines))
+
     await q.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
     return LINK
 

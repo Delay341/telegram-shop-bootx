@@ -410,8 +410,7 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"✅ Выгода: -{disc}% уже учтена")
         lines.append(f"💰 Стоимость пакета: {cost_preview:.0f} ₽")
         lines.append(f"👛 Ваш баланс: {bal:.2f} ₽")
-        await q.message.reply_text("
-".join(lines))
+        await q.message.reply_text("\n".join(lines))
 
     await q.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
     return LINK
@@ -432,7 +431,12 @@ async def order_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bal = get_balance(uid)
         if bal < cost:
             await update.message.reply_text(
-                f"Недостаточно средств. Нужно {cost:.0f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup <сумма>"
+                f"""❌ Недостаточно средств для оплаты
+
+Стоимость: {cost:.0f} ₽
+Ваш баланс: {bal:.2f} ₽
+
+💳 Пополните баланс командой: /topup сумма"""
             )
             context.user_data.pop("order", None)
             return ConversationHandler.END
@@ -538,7 +542,12 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bal = get_balance(uid)
     if bal < cost:
         await update.message.reply_text(
-            f"Недостаточно средств. Нужно {cost:.2f} ₽, на балансе {bal:.2f} ₽.\nПополнить: /topup <сумма>"
+                f"""❌ Недостаточно средств для оплаты
+
+Стоимость: {cost:.0f} ₽
+Ваш баланс: {bal:.2f} ₽
+
+💳 Пополните баланс командой: /topup сумма"""
         )
         context.user_data.pop("order", None)
         return ConversationHandler.END

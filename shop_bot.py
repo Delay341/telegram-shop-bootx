@@ -241,12 +241,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
     # 2) отправляем текст + кнопки
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=kb,
-        parse_mode=ParseMode.HTML
-    )
+  await context.bot.send_message(
+    chat_id=chat_id,
+    text=text,
+    reply_markup=kb,
+    parse_mode=ParseMode.HTML,
+    disable_web_page_preview=True
+)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (

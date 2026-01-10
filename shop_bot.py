@@ -1074,8 +1074,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(profile_cb, pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(promo_cb, pattern="^promo$"))
     app.add_handler(CallbackQueryHandler(promo_order_cb, pattern="^promo_order$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, promo_profile_input, block=False))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, promo_order_input, block=False))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, promo_profile_input, block=False), group=1)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, promo_order_input, block=False), group=1)
 
     # Оформление заказов
     conv_order = ConversationHandler(

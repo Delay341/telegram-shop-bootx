@@ -29,6 +29,9 @@ BALANCES_FILE = Path("balances.json")
 ORDERS_FILE = Path("orders.json")
 INVOICES_FILE = Path("invoices.json")
 
+PROMO_CODES_PATH = Path("config/promo_codes.json")
+PROMO_USES_FILE = Path("promo_uses.json")
+
 def _read_json(path: Path, default):
     try:
         if not path.exists(): return default
@@ -113,6 +116,57 @@ def confirm_invoice(invoice_id: str) -> dict|None:
             return inv
     return None
 
+
+def _load_promo_codes() -> dict:
+    return _read_json(PROMO_CODES_PATH, {})
+
+def _save_promo_codes(data: dict):
+    _write_json(PROMO_CODES_PATH, data)
+
+def _load_promo_uses() -> dict:
+    return _read_json(PROMO_USES_FILE, {"users": {}})
+
+def _save_promo_uses(data: dict):
+    _write_json(PROMO_USES_FILE, data)
+
+def promo_is_used(user_id: int, code: str) -> bool:
+    data = _load_promo_uses()
+    return code.upper() in set(data.get("users", {}).get(str(user_id), []))
+
+def promo_mark_used(user_id: int, code: str):
+    data = _load_promo_uses()
+    users = data.setdefault("users", {})
+    lst = users.setdefault(str(user_id), [])
+    code_u = code.upper()
+    if code_u not in lst:
+        lst.append(code_u)
+    _save_promo_uses(data)
+
+def promo_validate(code: str, base_cost: float, user_id: int, allow_for_combo: bool=False) -> tuple[bool, str, int]:
+    code_u = (code or "").strip().upper()
+    if not code_u:
+        return False, "Введите промокод.", 0
+    promos = _load_promo_codes()
+    cfg = promos.get(code_u)
+    if not cfg or not cfg.get("active", True):
+        return False, "Промокод не найден или не активен.", 0
+    percent = int(cfg.get("percent", 0) or 0)
+    if percent <= 0 or percent > 90:
+        return False, "Некорректная скидка у промокода.", 0
+    min_total = float(cfg.get("min_total", 0) or 0)
+    if min_total and float(base_cost) < min_total:
+        return False, f"Промокод действует от {min_total:.0f} ₽.", 0
+    if promo_is_used(user_id, code_u):
+        return False, "Этот промокод уже использован вами.", 0
+    if not allow_for_combo and cfg.get("no_combo", True):
+        # запрещаем для комбо по умолчанию
+        return True, "", percent
+    return True, "", percent
+
+def apply_discount(cost: float, percent: int) -> float:
+    return max(0.0, float(cost) * (1.0 - (float(percent)/100.0)))
+
+
 def append_order(order: dict):
     rows = _read_json(ORDERS_FILE, [])
     order["created_at"] = int(time.time())
@@ -154,6 +208,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "с быстрыми и надёжными результатами.\n\n"
         "Откройте каталог, чтобы выбрать услугу, или воспользуйтесь кнопками ниже "
         "для управления балансом и связи с поддержкой."
+        "\n\n🗒️Оферта - https://teletype.in/@boostx/ofertaboostx"
     )
 
     kb = InlineKeyboardMarkup([
@@ -208,6 +263,85 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     await update.message.reply_html(f"💳 <b>Ваш баланс:</b> <code>{get_balance(uid):.2f} ₽</code>")
 
+
+async def promo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    # Ввод промокода из профиля (сохраняем для следующего заказа)
+    context.user_data["awaiting_promo_profile"] = True
+    await q.message.reply_text("🎟 Введите промокод одним сообщением:")
+
+async def promo_profile_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_promo_profile"):
+        return
+    context.user_data["awaiting_promo_profile"] = False
+    code = (update.message.text or "").strip().upper()
+    promos = _load_promo_codes()
+    cfg = promos.get(code)
+    if not cfg or not cfg.get("active", True):
+        await update.message.reply_text("Промокод не найден или не активен.")
+        return
+    if promo_is_used(update.effective_user.id, code):
+        await update.message.reply_text("Этот промокод уже использован вами.")
+        return
+    context.user_data["active_promo"] = code
+    await update.message.reply_html(f"✅ Промокод <code>{code}</code> применён. Скидка учтётся при следующем оформлении заказа (от 100 ₽).")
+
+async def promo_order_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    # Ввод промокода на этапе подтверждения заказа
+    context.user_data["awaiting_promo_order"] = True
+    await q.message.reply_text("🎟 Введите промокод одним сообщением:")
+
+async def promo_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_promo_order"):
+        return ConversationHandler.END
+    context.user_data["awaiting_promo_order"] = False
+    info = context.user_data.get("order")
+    if not info:
+        await update.message.reply_text("Заказ не найден. Откройте каталог и выберите услугу заново.")
+        return ConversationHandler.END
+    if info.get("type") == "combo":
+        await update.message.reply_text("Промокод не применяется к комбо-наборам.")
+        return CONFIRM
+    code = (update.message.text or "").strip().upper()
+    base_cost = float(info.get("base_cost") or info.get("cost") or 0)
+    # если ранее применяли скидку — пересчитаем от base_cost
+    if base_cost <= 0:
+        base_cost = float(info.get("cost") or 0)
+    ok, msg, percent = promo_validate(code, base_cost, update.effective_user.id, allow_for_combo=False)
+    if not ok:
+        await update.message.reply_text(msg or "Промокод не подходит.")
+        return CONFIRM
+    context.user_data["active_promo"] = code
+    info["promo_code"] = code
+    info["promo_percent"] = int(percent)
+    info["base_cost"] = base_cost
+    new_cost = apply_discount(base_cost, int(percent))
+    info["cost"] = float(new_cost)
+    context.user_data["order"] = info
+
+    bal = get_balance(update.effective_user.id)
+    promo_line = f"• Промокод: <code>{code}</code> (−{int(percent)}%)\n"
+    text = (
+        "✅ <b>Подтверждение заказа</b>\n\n"
+        f"• Услуга: <b>{info['title']}</b>\n"
+        f"• Кол-во: <code>{info['qty']}</code>\n"
+        f"• Ссылка: <code>{info['link']}</code>\n"
+        f"• Стоимость: <code>{float(new_cost):.2f} ₽</code>\n"
+        f"{promo_line}"
+        f"• Баланс: <code>{bal:.2f} ₽</code>\n\n"
+        "Подтвердить оформление?"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎟 Промокод", callback_data="promo_order")],
+        [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_order")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_order")],
+    ])
+    await update.message.reply_html(text, reply_markup=kb)
+    return CONFIRM
+
 async def balance_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -250,6 +384,7 @@ async def profile_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("💳 Баланс", callback_data="balance"),
             InlineKeyboardButton("💳 Пополнить", callback_data="topup"),
         ],
+        [InlineKeyboardButton("🎟 Промокод", callback_data="promo")],
         [InlineKeyboardButton("🆘 Поддержка", callback_data="support")],
     ])
     await q.message.reply_html(text, reply_markup=kb)
@@ -369,7 +504,7 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="catalog")])
     await q.message.reply_html(f"<b>{title}</b>\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows))
 
-LINK, QTY, CONFIRM = range(3)
+LINK, QTY, CONFIRM, PROMO = range(4)
 
 async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -539,6 +674,19 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qty = int(adj_qty)
     cost = compute_cost(info["price"], info["unit"], info["mult"], qty)
     uid = update.effective_user.id
+    # Промокод (скидка %), применяется только к обычным услугам (не к комбо)
+    promo = context.user_data.get("active_promo")
+    if promo and float(cost) >= 100:
+        ok, msg, percent = promo_validate(str(promo), float(cost), int(uid), allow_for_combo=False)
+        if ok and percent:
+            info["promo_code"] = str(promo).upper()
+            info["promo_percent"] = int(percent)
+            info["base_cost"] = float(cost)
+            cost = apply_discount(float(cost), int(percent))
+        else:
+            # если промокод не подходит — сбрасываем
+            context.user_data.pop("active_promo", None)
+            info.pop("promo_code", None); info.pop("promo_percent", None); info.pop("base_cost", None)
     bal = get_balance(uid)
     if bal < cost:
         await update.message.reply_text(
@@ -557,16 +705,21 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info["cost"] = float(cost)
     context.user_data["order"] = info
 
+    promo_line = ""
+    if info.get("promo_code") and info.get("promo_percent"):
+        promo_line = f"• Промокод: <code>{info.get('promo_code')}</code> (−{int(info.get('promo_percent'))}%)\n"
     text = (
         "✅ <b>Подтверждение заказа</b>\n\n"
         f"• Услуга: <code>{info.get('title','Услуга')}</code>\n"
         f"• Кол-во: <code>{qty}</code>\n"
         f"• Ссылка: <code>{info.get('link','')}</code>\n"
         f"• Стоимость: <code>{cost:.2f} ₽</code>\n"
+        f"{promo_line}"
         f"• Баланс: <code>{bal:.2f} ₽</code>\n\n"
         "Подтвердить оформление?"
     )
     kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎟 Промокод", callback_data="promo_order")],
         [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_order")],
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel_order")],
     ])
@@ -918,6 +1071,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(balance_cb, pattern="^balance$"))
     app.add_handler(CallbackQueryHandler(topup_cb, pattern="^topup$"))
     app.add_handler(CallbackQueryHandler(profile_cb, pattern="^profile$"))
+    app.add_handler(CallbackQueryHandler(promo_cb, pattern="^promo$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, promo_profile_input))
 
     # Оформление заказов
     conv_order = ConversationHandler(

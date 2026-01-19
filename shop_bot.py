@@ -167,6 +167,207 @@ def apply_discount(cost: float, percent: int) -> float:
     return max(0.0, float(cost) * (1.0 - (float(percent)/100.0)))
 
 
+# --------------------
+# Admin panel (edit base price for one item; client price is base * pricing_multiplier)
+# --------------------
+ADMIN_MENU, ADMIN_SELECT_CAT, ADMIN_SELECT_ITEM, ADMIN_PRICE_INPUT = range(20, 24)
+
+def _is_admin(uid: int) -> bool:
+    try:
+        return int(uid) == int(ADMIN_ID)
+    except Exception:
+        return False
+
+async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for /admin."""
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        # тихо игнорируем, чтобы не светить админ-меню
+        return ConversationHandler.END
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💲 Изменить цену товара", callback_data="admin_price")],
+        [InlineKeyboardButton("❌ Выйти", callback_data="admin_cancel")],
+    ])
+    if update.message:
+        await update.message.reply_html("🛠 <b>Админ-панель</b>\n\nВыберите действие:", reply_markup=kb)
+    else:
+        q = update.callback_query
+        if q:
+            await q.answer()
+            await q.message.reply_html("🛠 <b>Админ-панель</b>\n\nВыберите действие:", reply_markup=kb)
+    return ADMIN_MENU
+
+async def admin_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await admin_start(update, context)
+
+async def admin_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q:
+        await q.answer()
+        await q.message.reply_text("Админ-панель закрыта.")
+    return ConversationHandler.END
+
+async def admin_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+    await update.message.reply_text("Админ-панель закрыта.")
+    return ConversationHandler.END
+
+async def admin_price_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    data = load_catalog()
+    cats = data.get("categories", [])
+    if not cats:
+        await q.message.reply_text("Категорий нет.")
+        return ADMIN_MENU
+
+    rows = []
+    for i, c in enumerate(cats):
+        rows.append([InlineKeyboardButton(c.get("title", f"Категория {i+1}"), callback_data=f"admin_cat_{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="admin")])
+    await q.message.reply_html("💲 <b>Выберите категорию</b>", reply_markup=InlineKeyboardMarkup(rows))
+    return ADMIN_SELECT_CAT
+
+async def admin_choose_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    try:
+        cidx = int(q.data.split("_")[-1])
+    except Exception:
+        await q.message.reply_text("Ошибка выбора категории.")
+        return ADMIN_MENU
+
+    data = load_catalog()
+    cats = data.get("categories", [])
+    if cidx < 0 or cidx >= len(cats):
+        await q.message.reply_text("Категория не найдена.")
+        return ADMIN_MENU
+
+    cat = cats[cidx]
+    items = cat.get("items", [])
+    if not items:
+        await q.message.reply_text("В этой категории нет товаров.")
+        return ADMIN_SELECT_CAT
+
+    context.user_data["admin_edit"] = {"cat_idx": cidx}
+
+    mult = float(data.get("pricing_multiplier", 1.0))
+    unit_default = cat.get("unit", "per_1000")
+    rows = []
+    for i, it in enumerate(items):
+        base = float(it.get("price", 0) or 0)
+        unit = it.get("unit", unit_default)
+        label = f"{it.get('title','Товар')} — база {base:g} → {price_str(base, unit, mult)}"
+        rows.append([InlineKeyboardButton(label[:64], callback_data=f"admin_item_{cidx}_{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="admin_price")])
+    await q.message.reply_html(f"💲 <b>{cat.get('title','Категория')}</b>\n\nВыберите товар:", reply_markup=InlineKeyboardMarkup(rows))
+    return ADMIN_SELECT_ITEM
+
+async def admin_choose_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    try:
+        _, _, cidx, iidx = q.data.split("_")
+        cidx = int(cidx); iidx = int(iidx)
+    except Exception:
+        await q.message.reply_text("Ошибка выбора товара.")
+        return ADMIN_MENU
+
+    data = load_catalog()
+    cats = data.get("categories", [])
+    if cidx < 0 or cidx >= len(cats):
+        await q.message.reply_text("Категория не найдена.")
+        return ADMIN_MENU
+    cat = cats[cidx]
+    items = cat.get("items", [])
+    if iidx < 0 or iidx >= len(items):
+        await q.message.reply_text("Товар не найден.")
+        return ADMIN_MENU
+    item = items[iidx]
+
+    context.user_data["admin_edit"] = {"cat_idx": cidx, "item_idx": iidx}
+
+    mult = float(data.get("pricing_multiplier", 1.0))
+    unit = item.get("unit", cat.get("unit", "per_1000"))
+    base = float(item.get("price", 0) or 0)
+    shown = price_str(base, unit, mult)
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад к товарам", callback_data=f"admin_cat_{cidx}")],
+        [InlineKeyboardButton("❌ Выйти", callback_data="admin_cancel")],
+    ])
+    await q.message.reply_html(
+        "✏️ <b>Изменение цены</b>\n\n"
+        f"Товар: <b>{item.get('title','Товар')}</b>\n"
+        f"Текущая база: <code>{base:g}</code>\n"
+        f"Цена клиенту (x{mult:g}): <code>{shown}</code>\n\n"
+        "Введите <b>новую базовую цену</b> одним сообщением (например: <code>50</code> или <code>50.5</code>):",
+        reply_markup=kb,
+    )
+    return ADMIN_PRICE_INPUT
+
+async def admin_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    raw = (update.message.text or "").strip().replace(",", ".")
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text("Цена должна быть положительным числом. Пример: 50 или 50.5")
+        return ADMIN_PRICE_INPUT
+
+    edit = context.user_data.get("admin_edit") or {}
+    cidx = int(edit.get("cat_idx", -1))
+    iidx = int(edit.get("item_idx", -1))
+    data = load_catalog()
+    cats = data.get("categories", [])
+    if cidx < 0 or cidx >= len(cats):
+        await update.message.reply_text("Не удалось найти категорию. Откройте /admin заново.")
+        return ConversationHandler.END
+    items = cats[cidx].get("items", [])
+    if iidx < 0 or iidx >= len(items):
+        await update.message.reply_text("Не удалось найти товар. Откройте /admin заново.")
+        return ConversationHandler.END
+
+    items[iidx]["price"] = float(value)
+    _write_json(CATALOG_PATH, data)
+
+    mult = float(data.get("pricing_multiplier", 1.0))
+    unit = items[iidx].get("unit", cats[cidx].get("unit", "per_1000"))
+    shown = price_str(float(value), unit, mult)
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💲 Изменить другой товар", callback_data="admin_price")],
+        [InlineKeyboardButton("🛠 В админку", callback_data="admin")],
+        [InlineKeyboardButton("❌ Выйти", callback_data="admin_cancel")],
+    ])
+    await update.message.reply_html(
+        "✅ Цена обновлена!\n\n"
+        f"Новая база: <code>{float(value):g}</code>\n"
+        f"Цена клиенту (x{mult:g}): <code>{shown}</code>",
+        reply_markup=kb,
+    )
+    return ADMIN_MENU
+
+
 def append_order(order: dict):
     rows = _read_json(ORDERS_FILE, [])
     order["created_at"] = int(time.time())
@@ -256,6 +457,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/catalog — каталог услуг\n"
         "/balance — баланс\n"
         "/topup &lt;сумма&gt; — пополнить баланс\n"
+        "/admin — админ-панель (только админ)\n"
         "/confirm_payment &lt;invoice_id&gt; — подтверждение оплаты (админ)\n"
     )
     await update.message.reply_html(text)
@@ -1107,6 +1309,43 @@ def build_application():
     )
 
     app.add_handler(conv_support)
+
+    # Админ-панель (ручное изменение базовой цены конкретного товара)
+    conv_admin = ConversationHandler(
+        entry_points=[CommandHandler("admin", admin_start), CallbackQueryHandler(admin_menu_cb, pattern="^admin$")],
+        states={
+            ADMIN_MENU: [
+                CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+            ],
+            ADMIN_SELECT_CAT: [
+                CallbackQueryHandler(admin_choose_cat, pattern="^admin_cat_"),
+                CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_SELECT_ITEM: [
+                CallbackQueryHandler(admin_choose_item, pattern="^admin_item_"),
+                CallbackQueryHandler(admin_choose_cat, pattern="^admin_cat_"),
+                CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_PRICE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_price_input),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+                CallbackQueryHandler(admin_choose_cat, pattern="^admin_cat_"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", admin_cancel_cmd)],
+        allow_reentry=True,
+        per_message=False,
+        name="admin_conv",
+        persistent=False,
+    )
+    app.add_handler(conv_admin)
 
     # Safety net: answer any unexpected callback to stop Telegram "loading" spinner
     app.add_handler(CallbackQueryHandler(unknown_callback))

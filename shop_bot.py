@@ -168,9 +168,14 @@ def apply_discount(cost: float, percent: int) -> float:
 
 
 # --------------------
-# Admin panel (edit base price for one item; client price is base * pricing_multiplier)
+# Admin panel
+# - Edit base price for one item (client price = base * pricing_multiplier)
+# - Add category / item (with supplier service_id for auto-orders)
+# - Add / edit / delete descriptions for categories and items
 # --------------------
-ADMIN_MENU, ADMIN_SELECT_CAT, ADMIN_SELECT_ITEM, ADMIN_PRICE_INPUT = range(20, 24)
+
+ADMIN_MENU, ADMIN_SELECT_CAT, ADMIN_SELECT_ITEM, ADMIN_PRICE_INPUT, ADMIN_ADD_CAT_TITLE, ADMIN_ADD_ITEM_CAT, ADMIN_ADD_ITEM_TITLE, ADMIN_ADD_ITEM_PRICE, ADMIN_ADD_ITEM_SID, ADMIN_ADD_ITEM_DESC, ADMIN_DESC_MENU, ADMIN_DESC_CAT_SELECT, ADMIN_DESC_ITEM_SELECT, ADMIN_DESC_INPUT = range(20, 35)
+
 
 def _is_admin(uid: int) -> bool:
     try:
@@ -178,16 +183,56 @@ def _is_admin(uid: int) -> bool:
     except Exception:
         return False
 
+
+def _slugify(s: str) -> str:
+    s = (s or '').strip().lower()
+    # keep latin/digits/underscore only
+    s = re.sub(r'[^a-z0-9_]+', '_', s)
+    s = re.sub(r'_+', '_', s).strip('_')
+    return s or 'item'
+
+
+def _new_item_id(cat_title: str, item_title: str) -> str:
+    # stable-ish, short
+    base = f"{_slugify(cat_title)[:12]}_{_slugify(item_title)[:12]}"
+    return f"{base}_{uuid.uuid4().hex[:6]}"
+
+
+def _admin_kb_main() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('💲 Изменить цену товара', callback_data='admin_price')],
+        [InlineKeyboardButton('➕ Добавить категорию', callback_data='admin_add_cat')],
+        [InlineKeyboardButton('➕ Добавить товар', callback_data='admin_add_item')],
+        [InlineKeyboardButton('📝 Описания', callback_data='admin_desc')],
+        [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
+    ])
+
+
+def _cat_buttons(cats, prefix: str, back_cb: str = 'admin'):
+    rows = []
+    for i, c in enumerate(cats):
+        rows.append([InlineKeyboardButton(c.get('title', f'Категория {i+1}'), callback_data=f"{prefix}{i}")])
+    rows.append([InlineKeyboardButton('⬅️ Назад', callback_data=back_cb)])
+    return InlineKeyboardMarkup(rows)
+
+
+def _item_buttons(cat, cidx: int, prefix: str, back_cb: str):
+    rows = []
+    items = cat.get('items', []) or []
+    for i, it in enumerate(items):
+        title = it.get('title', f'Товар {i+1}')
+        rows.append([InlineKeyboardButton(title[:64], callback_data=f"{prefix}{cidx}_{i}")])
+    rows.append([InlineKeyboardButton('⬅️ Назад', callback_data=back_cb)])
+    return InlineKeyboardMarkup(rows)
+
+
 async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point for /admin."""
+    """Entry point for /admin and main admin menu."""
     uid = update.effective_user.id if update.effective_user else 0
     if not _is_admin(uid):
-        # тихо игнорируем, чтобы не светить админ-меню
         return ConversationHandler.END
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💲 Изменить цену товара", callback_data="admin_price")],
-        [InlineKeyboardButton("❌ Выйти", callback_data="admin_cancel")],
-    ])
+
+    kb = _admin_kb_main()
     if update.message:
         await update.message.reply_html("🛠 <b>Админ-панель</b>\n\nВыберите действие:", reply_markup=kb)
     else:
@@ -197,23 +242,28 @@ async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_html("🛠 <b>Админ-панель</b>\n\nВыберите действие:", reply_markup=kb)
     return ADMIN_MENU
 
+
 async def admin_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await admin_start(update, context)
+
 
 async def admin_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if q:
         await q.answer()
-        await q.message.reply_text("Админ-панель закрыта.")
+        await q.message.reply_text('Админ-панель закрыта.')
     return ConversationHandler.END
+
 
 async def admin_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id if update.effective_user else 0
     if not _is_admin(uid):
         return ConversationHandler.END
-    await update.message.reply_text("Админ-панель закрыта.")
+    await update.message.reply_text('Админ-панель закрыта.')
     return ConversationHandler.END
 
+
+# ----- Edit price -----
 async def admin_price_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -222,17 +272,14 @@ async def admin_price_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     data = load_catalog()
-    cats = data.get("categories", [])
+    cats = data.get('categories', [])
     if not cats:
-        await q.message.reply_text("Категорий нет.")
+        await q.message.reply_text('Категорий нет.')
         return ADMIN_MENU
 
-    rows = []
-    for i, c in enumerate(cats):
-        rows.append([InlineKeyboardButton(c.get("title", f"Категория {i+1}"), callback_data=f"admin_cat_{i}")])
-    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="admin")])
-    await q.message.reply_html("💲 <b>Выберите категорию</b>", reply_markup=InlineKeyboardMarkup(rows))
+    await q.message.reply_html('💲 <b>Выберите категорию</b>', reply_markup=_cat_buttons(cats, 'admin_cat_', 'admin'))
     return ADMIN_SELECT_CAT
+
 
 async def admin_choose_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -241,37 +288,72 @@ async def admin_choose_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(uid):
         return ConversationHandler.END
 
-    try:
-        cidx = int(q.data.split("_")[-1])
-    except Exception:
-        await q.message.reply_text("Ошибка выбора категории.")
-        return ADMIN_MENU
-
+    # Two entry points:
+    # 1) admin_cat_{i} (edit price)
+    # 2) admin_desc_cat_{i} (descriptions)
     data = load_catalog()
-    cats = data.get("categories", [])
-    if cidx < 0 or cidx >= len(cats):
-        await q.message.reply_text("Категория не найдена.")
-        return ADMIN_MENU
+    cats = data.get('categories', [])
 
-    cat = cats[cidx]
-    items = cat.get("items", [])
-    if not items:
-        await q.message.reply_text("В этой категории нет товаров.")
-        return ADMIN_SELECT_CAT
+    if q.data.startswith('admin_cat_'):
+        try:
+            cidx = int(q.data.split('_')[-1])
+        except Exception:
+            await q.message.reply_text('Ошибка выбора категории.')
+            return ADMIN_MENU
 
-    context.user_data["admin_edit"] = {"cat_idx": cidx}
+        if cidx < 0 or cidx >= len(cats):
+            await q.message.reply_text('Категория не найдена.')
+            return ADMIN_MENU
 
-    mult = float(data.get("pricing_multiplier", 1.0))
-    unit_default = cat.get("unit", "per_1000")
-    rows = []
-    for i, it in enumerate(items):
-        base = float(it.get("price", 0) or 0)
-        unit = it.get("unit", unit_default)
-        label = f"{it.get('title','Товар')} — база {base:g} → {price_str(base, unit, mult)}"
-        rows.append([InlineKeyboardButton(label[:64], callback_data=f"admin_item_{cidx}_{i}")])
-    rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="admin_price")])
-    await q.message.reply_html(f"💲 <b>{cat.get('title','Категория')}</b>\n\nВыберите товар:", reply_markup=InlineKeyboardMarkup(rows))
-    return ADMIN_SELECT_ITEM
+        cat = cats[cidx]
+        items = cat.get('items', [])
+        if not items:
+            await q.message.reply_text('В этой категории нет товаров.')
+            return ADMIN_SELECT_CAT
+
+        context.user_data['admin_edit'] = {'cat_idx': cidx}
+
+        mult = float(data.get('pricing_multiplier', 1.0))
+        unit_default = cat.get('unit', 'per_1000')
+        rows = []
+        for i, it in enumerate(items):
+            base = float(it.get('price', 0) or 0)
+            unit = it.get('unit', unit_default)
+            label = f"{it.get('title','Товар')} — база {base:g} → {price_str(base, unit, mult)}"
+            rows.append([InlineKeyboardButton(label[:64], callback_data=f"admin_item_{cidx}_{i}")])
+        rows.append([InlineKeyboardButton('⬅️ Назад к категориям', callback_data='admin_price')])
+        await q.message.reply_html(f"💲 <b>{cat.get('title','Категория')}</b>\n\nВыберите товар:", reply_markup=InlineKeyboardMarkup(rows))
+        return ADMIN_SELECT_ITEM
+
+    # description flow category select
+    if q.data.startswith('admin_desc_cat_'):
+        try:
+            cidx = int(q.data.split('_')[-1])
+        except Exception:
+            await q.message.reply_text('Ошибка выбора категории.')
+            return ADMIN_DESC_MENU
+        if cidx < 0 or cidx >= len(cats):
+            await q.message.reply_text('Категория не найдена.')
+            return ADMIN_DESC_MENU
+        context.user_data['admin_desc'] = {'target': 'category', 'cat_idx': cidx}
+        cat = cats[cidx]
+        desc = (cat.get('description') or '').strip()
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton('✏️ Изменить описание', callback_data='admin_desc_edit')],
+            [InlineKeyboardButton('🗑 Удалить описание', callback_data='admin_desc_delete')],
+            [InlineKeyboardButton('⬅️ Назад', callback_data='admin_desc_cat')],
+            [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
+        ])
+        msg = ("📝 <b>Описание категории</b>\n\n"
+       f"Категория: <b>{cat.get('title','Категория')}</b>\n\n"
+       "Текущее описание:\n"
+       f"<code>{desc if desc else '— нет —'}</code>\n\n"
+       "Выберите действие:")
+        await q.message.reply_html(msg, reply_markup=kb)
+        return ADMIN_DESC_MENU
+
+    return ADMIN_MENU
+
 
 async def admin_choose_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -280,92 +362,327 @@ async def admin_choose_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(uid):
         return ConversationHandler.END
 
-    try:
-        _, _, cidx, iidx = q.data.split("_")
-        cidx = int(cidx); iidx = int(iidx)
-    except Exception:
-        await q.message.reply_text("Ошибка выбора товара.")
-        return ADMIN_MENU
+    # Two entry points:
+    # 1) admin_item_{cidx}_{iidx} (edit price)
+    # 2) admin_desc_item_{cidx}_{iidx} (item description)
 
     data = load_catalog()
-    cats = data.get("categories", [])
-    if cidx < 0 or cidx >= len(cats):
-        await q.message.reply_text("Категория не найдена.")
-        return ADMIN_MENU
-    cat = cats[cidx]
-    items = cat.get("items", [])
-    if iidx < 0 or iidx >= len(items):
-        await q.message.reply_text("Товар не найден.")
-        return ADMIN_MENU
-    item = items[iidx]
+    cats = data.get('categories', [])
 
-    context.user_data["admin_edit"] = {"cat_idx": cidx, "item_idx": iidx}
+    if q.data.startswith('admin_item_'):
+        try:
+            _, _, cidx, iidx = q.data.split('_')
+            cidx = int(cidx); iidx = int(iidx)
+        except Exception:
+            await q.message.reply_text('Ошибка выбора товара.')
+            return ADMIN_MENU
 
-    mult = float(data.get("pricing_multiplier", 1.0))
-    unit = item.get("unit", cat.get("unit", "per_1000"))
-    base = float(item.get("price", 0) or 0)
-    shown = price_str(base, unit, mult)
+        if cidx < 0 or cidx >= len(cats):
+            await q.message.reply_text('Категория не найдена.')
+            return ADMIN_MENU
+        cat = cats[cidx]
+        items = cat.get('items', [])
+        if iidx < 0 or iidx >= len(items):
+            await q.message.reply_text('Товар не найден.')
+            return ADMIN_MENU
+        item = items[iidx]
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Назад к товарам", callback_data=f"admin_cat_{cidx}")],
-        [InlineKeyboardButton("❌ Выйти", callback_data="admin_cancel")],
-    ])
-    await q.message.reply_html(
-        "✏️ <b>Изменение цены</b>\n\n"
-        f"Товар: <b>{item.get('title','Товар')}</b>\n"
-        f"Текущая база: <code>{base:g}</code>\n"
-        f"Цена клиенту (x{mult:g}): <code>{shown}</code>\n\n"
-        "Введите <b>новую базовую цену</b> одним сообщением (например: <code>50</code> или <code>50.5</code>):",
-        reply_markup=kb,
-    )
-    return ADMIN_PRICE_INPUT
+        context.user_data['admin_edit'] = {'cat_idx': cidx, 'item_idx': iidx}
+
+        mult = float(data.get('pricing_multiplier', 1.0))
+        unit = item.get('unit', cat.get('unit', 'per_1000'))
+        base = float(item.get('price', 0) or 0)
+        shown = price_str(base, unit, mult)
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton('⬅️ Назад к товарам', callback_data=f"admin_cat_{cidx}")],
+            [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
+        ])
+        msg = ("✏️ <b>Изменение цены</b>\n\n"
+       f"Товар: <b>{item.get('title','Товар')}</b>\n"
+       f"Текущая база: <code>{base:g}</code>\n"
+       f"Цена клиенту (x{mult:g}): <code>{shown}</code>\n\n"
+       "Введите <b>новую базовую цену</b> одним сообщением (например: <code>50</code> или <code>50.5</code>):")
+        await q.message.reply_html(msg, reply_markup=kb)
+        return ADMIN_PRICE_INPUT
+
+    if q.data.startswith('admin_desc_item_'):
+        try:
+            _, _, _, cidx, iidx = q.data.split('_')
+            cidx = int(cidx); iidx = int(iidx)
+        except Exception:
+            await q.message.reply_text('Ошибка выбора товара.')
+            return ADMIN_DESC_MENU
+
+        if cidx < 0 or cidx >= len(cats):
+            await q.message.reply_text('Категория не найдена.')
+            return ADMIN_DESC_MENU
+        cat = cats[cidx]
+        items = cat.get('items', [])
+        if iidx < 0 or iidx >= len(items):
+            await q.message.reply_text('Товар не найден.')
+            return ADMIN_DESC_MENU
+        item = items[iidx]
+
+        context.user_data['admin_desc'] = {'target': 'item', 'cat_idx': cidx, 'item_idx': iidx}
+        desc = (item.get('description') or '').strip()
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton('✏️ Изменить описание', callback_data='admin_desc_edit')],
+            [InlineKeyboardButton('🗑 Удалить описание', callback_data='admin_desc_delete')],
+            [InlineKeyboardButton('⬅️ Назад', callback_data='admin_desc_item')],
+            [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
+        ])
+        msg = ("📝 <b>Описание товара</b>\n\n"
+       f"Категория: <b>{cat.get('title','Категория')}</b>\n"
+       f"Товар: <b>{item.get('title','Товар')}</b>\n\n"
+       "Текущее описание:\n"
+       f"<code>{desc if desc else '— нет —'}</code>\n\n"
+       "Выберите действие:")
+        await q.message.reply_html(msg, reply_markup=kb)
+        return ADMIN_DESC_MENU
+
+    return ADMIN_MENU
+
 
 async def admin_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id if update.effective_user else 0
     if not _is_admin(uid):
         return ConversationHandler.END
 
-    raw = (update.message.text or "").strip().replace(",", ".")
+    raw = (update.message.text or '').strip().replace(',', '.')
     try:
         value = float(raw)
         if value <= 0:
             raise ValueError
     except Exception:
-        await update.message.reply_text("Цена должна быть положительным числом. Пример: 50 или 50.5")
+        await update.message.reply_text('Цена должна быть положительным числом. Пример: 50 или 50.5')
         return ADMIN_PRICE_INPUT
 
-    edit = context.user_data.get("admin_edit") or {}
-    cidx = int(edit.get("cat_idx", -1))
-    iidx = int(edit.get("item_idx", -1))
+    edit = context.user_data.get('admin_edit') or {}
+    cidx = int(edit.get('cat_idx', -1))
+    iidx = int(edit.get('item_idx', -1))
     data = load_catalog()
-    cats = data.get("categories", [])
+    cats = data.get('categories', [])
     if cidx < 0 or cidx >= len(cats):
-        await update.message.reply_text("Не удалось найти категорию. Откройте /admin заново.")
+        await update.message.reply_text('Не удалось найти категорию. Откройте /admin заново.')
         return ConversationHandler.END
-    items = cats[cidx].get("items", [])
+    items = cats[cidx].get('items', [])
     if iidx < 0 or iidx >= len(items):
-        await update.message.reply_text("Не удалось найти товар. Откройте /admin заново.")
+        await update.message.reply_text('Не удалось найти товар. Откройте /admin заново.')
         return ConversationHandler.END
 
-    items[iidx]["price"] = float(value)
+    items[iidx]['price'] = float(value)
     _write_json(CATALOG_PATH, data)
 
-    mult = float(data.get("pricing_multiplier", 1.0))
-    unit = items[iidx].get("unit", cats[cidx].get("unit", "per_1000"))
+    mult = float(data.get('pricing_multiplier', 1.0))
+    unit = items[iidx].get('unit', cats[cidx].get('unit', 'per_1000'))
     shown = price_str(float(value), unit, mult)
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💲 Изменить другой товар", callback_data="admin_price")],
-        [InlineKeyboardButton("🛠 В админку", callback_data="admin")],
-        [InlineKeyboardButton("❌ Выйти", callback_data="admin_cancel")],
+        [InlineKeyboardButton('💲 Изменить другой товар', callback_data='admin_price')],
+        [InlineKeyboardButton('🛠 В админку', callback_data='admin')],
+        [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
     ])
-    await update.message.reply_html(
-        "✅ Цена обновлена!\n\n"
-        f"Новая база: <code>{float(value):g}</code>\n"
-        f"Цена клиенту (x{mult:g}): <code>{shown}</code>",
-        reply_markup=kb,
-    )
+    msg = ("✅ Цена обновлена!\n\n"
+       f"Новая база: <code>{float(value):g}</code>\n"
+       f"Цена клиенту (x{mult:g}): <code>{shown}</code>")
+    await update.message.reply_html(msg, reply_markup=kb)
     return ADMIN_MENU
+
+
+# ----- Add category -----
+async def admin_add_cat_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    await q.message.reply_text('➕ Введите название <b>новой категории</b> одним сообщением:', parse_mode=ParseMode.HTML)
+    return ADMIN_ADD_CAT_TITLE
+
+
+async def admin_add_cat_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    title = (update.message.text or '').strip()
+    if not title:
+        await update.message.reply_text('Название не может быть пустым. Введите ещё раз:')
+        return ADMIN_ADD_CAT_TITLE
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    # prevent exact duplicate titles
+    if any((c.get('title','').strip().lower() == title.lower()) for c in cats):
+        await update.message.reply_text('Категория с таким названием уже есть. Введите другое название:')
+        return ADMIN_ADD_CAT_TITLE
+
+    cats.append({
+        'title': title,
+        'unit': 'per_1000',
+        'description': '',
+        'items': [],
+    })
+    data['categories'] = cats
+    _write_json(CATALOG_PATH, data)
+
+    await update.message.reply_html('✅ Категория добавлена!')
+    return await admin_start(update, context)
+
+
+# ----- Add item -----
+async def admin_add_item_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if not cats:
+        await q.message.reply_text('Сначала добавьте категорию.')
+        return ADMIN_MENU
+
+    await q.message.reply_html('➕ <b>Выберите категорию</b>, куда добавляем товар:', reply_markup=_cat_buttons(cats, 'admin_add_item_cat_', 'admin'))
+    return ADMIN_ADD_ITEM_CAT
+
+
+async def admin_add_item_choose_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    try:
+        cidx = int(q.data.split('_')[-1])
+    except Exception:
+        await q.message.reply_text('Ошибка выбора категории.')
+        return ADMIN_MENU
+    if cidx < 0 or cidx >= len(cats):
+        await q.message.reply_text('Категория не найдена.')
+        return ADMIN_MENU
+
+    context.user_data['admin_new_item'] = {'cat_idx': cidx}
+    await q.message.reply_text('➕ Введите <b>название товара</b> одним сообщением:', parse_mode=ParseMode.HTML)
+    return ADMIN_ADD_ITEM_TITLE
+
+
+async def admin_add_item_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    title = (update.message.text or '').strip()
+    if not title:
+        await update.message.reply_text('Название не может быть пустым. Введите ещё раз:')
+        return ADMIN_ADD_ITEM_TITLE
+
+    st = context.user_data.get('admin_new_item') or {}
+    st['title'] = title
+    context.user_data['admin_new_item'] = st
+
+    await update.message.reply_text('Введите <b>базовую цену</b> (цена поставщика), например: 50 или 50.5', parse_mode=ParseMode.HTML)
+    return ADMIN_ADD_ITEM_PRICE
+
+
+async def admin_add_item_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    raw = (update.message.text or '').strip().replace(',', '.')
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text('Цена должна быть положительным числом. Пример: 50 или 50.5')
+        return ADMIN_ADD_ITEM_PRICE
+
+    st = context.user_data.get('admin_new_item') or {}
+    st['price'] = float(value)
+    context.user_data['admin_new_item'] = st
+
+    await update.message.reply_text('Введите <b>ID услуги у поставщика</b> (service_id). Только число:', parse_mode=ParseMode.HTML)
+    return ADMIN_ADD_ITEM_SID
+
+
+async def admin_add_item_sid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    raw = (update.message.text or '').strip()
+    if not raw.isdigit():
+        await update.message.reply_text('Service ID должен быть числом. Введите ещё раз:')
+        return ADMIN_ADD_ITEM_SID
+
+    st = context.user_data.get('admin_new_item') or {}
+    st['service_id'] = int(raw)
+    context.user_data['admin_new_item'] = st
+
+    await update.message.reply_text('📝 Введите описание товара одним сообщением.\nЕсли описание не нужно — отправьте <code>skip</code>.', parse_mode=ParseMode.HTML)
+    return ADMIN_ADD_ITEM_DESC
+
+
+async def admin_add_item_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    desc = (update.message.text or '').strip()
+    if desc.lower() == 'skip':
+        desc = ''
+
+    st = context.user_data.get('admin_new_item') or {}
+    cidx = int(st.get('cat_idx', -1))
+    title = st.get('title', '')
+    price = float(st.get('price', 0) or 0)
+    service_id = st.get('service_id')
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if cidx < 0 or cidx >= len(cats):
+        await update.message.reply_text('Категория не найдена. Откройте /admin заново.')
+        return ConversationHandler.END
+
+    cat = cats[cidx]
+    item_id = _new_item_id(cat.get('title','cat'), title)
+    cat.setdefault('items', []).append({
+        'id': item_id,
+        'title': title,
+        'price': float(price),
+        'service_id': int(service_id) if service_id is not None else None,
+        'description': desc,
+        'type': 'single',
+    })
+
+    _write_json(CATALOG_PATH, data)
+
+    mult = float(data.get('pricing_multiplier', 1.0))
+    unit = cat.get('unit', 'per_1000')
+    shown = price_str(float(price), unit, mult)
+
+    msg = ("✅ Товар добавлен!\n\n"
+       f"Категория: <b>{cat.get('title','Категория')}</b>\n"
+       f"Товар: <b>{title}</b>\n"
+       f"Цена в боте (x{mult:g}): <b>{shown}</b>\n"
+       f"Service ID: <code>{int(service_id)}</code>")
+    await update.message.reply_html(msg, disable_web_page_preview=True)
+    return ADMIN_MENU
+
+    if tgt == 'item' and 0 <= cidx < len(cats):
+        items = cats[cidx].get('items', [])
+        if 0 <= iidx < len(items):
+            items[iidx]['description'] = desc
+            _write_json(CATALOG_PATH, data)
+            await update.message.reply_text('✅ Описание товара обновлено.')
+            return ADMIN_MENU
+
+    await update.message.reply_text('Не удалось обновить описание. Откройте /admin заново.')
+    return ConversationHandler.END
 
 
 def append_order(order: dict):
@@ -705,7 +1022,9 @@ async def show_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = f"{item.get('title','Услуга')} — {price_str(item.get('price',0), item_unit, mult)}"
         rows.append([InlineKeyboardButton(label[:64], callback_data=f"item_{idx}_{i}")])
     rows.append([InlineKeyboardButton("⬅️ Назад к категориям", callback_data="catalog")])
-    await q.message.reply_html(f"<b>{title}</b>\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows))
+    desc = (cat.get('description') or '').strip()
+    header = f"<b>{title}</b>" + (f"\n\n{desc}" if desc else '')
+    await q.message.reply_html(f"{header}\nВыберите услугу:", reply_markup=InlineKeyboardMarkup(rows))
 
 LINK, QTY, CONFIRM, PROMO = range(4)
 
@@ -729,6 +1048,8 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "platform": item.get("platform", cat.get("title","Категория")),
         "components": item.get("components", []),
         "discount_percent": int(item.get("discount_percent", 0)),
+        "supplier_service_id": item.get("service_id"),
+        "description": (item.get("description") or "").strip(),
     }
     # Если это комбо-набор — показываем состав до ввода ссылки
     if context.user_data["order"].get("item_type") == "combo":
@@ -749,6 +1070,16 @@ async def order_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"💰 Стоимость пакета: {cost_preview:.0f} ₽")
         lines.append(f"👛 Ваш баланс: {bal:.2f} ₽")
         await q.message.reply_text("\n".join(lines))
+
+    # Показать описание услуги (если есть)
+    if context.user_data["order"].get("description") and context.user_data["order"].get("item_type") != "combo":
+        o = context.user_data["order"]
+        cost_preview = compute_cost(float(o.get("price", 0)), o.get("unit", "per_1000"), float(o.get("mult", 1.0)), 1000 if o.get("unit") != "package" else 1)
+        # Для package preview уже в комбо, поэтому тут только single
+        await q.message.reply_html(
+            f"ℹ️ <b>{o.get('title','Услуга')}</b>\n\n{ o.get('description','') }\n\nЦена: <b>{price_str(o.get('price',0), o.get('unit','per_1000'), o.get('mult',1.0))}</b>",
+            disable_web_page_preview=True,
+        )
 
     await q.message.reply_text("🔗 Отправьте ссылку (URL), на которую оформляем заказ:")
     return LINK
@@ -859,7 +1190,7 @@ async def order_get_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return QTY
 
     info = context.user_data.get("order", {})
-    sid = resolve_service_id(info.get("cat_title","Категория"), info.get("title","Услуга"), info.get("item_id"))
+    sid = info.get('supplier_service_id') or resolve_service_id(info.get("cat_title","Категория"), info.get("title","Услуга"), info.get("item_id"))
     if not sid:
         await update.message.reply_text("Эта позиция не привязана к поставщику. Добавьте в service_map.json соответствующий service_id.")
         return ConversationHandler.END
@@ -1310,24 +1641,30 @@ def build_application():
 
     app.add_handler(conv_support)
 
-    # Админ-панель (ручное изменение базовой цены конкретного товара)
+    # Админ-панель (цены / категории / товары / описания)
     conv_admin = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_start), CallbackQueryHandler(admin_menu_cb, pattern="^admin$")],
         states={
             ADMIN_MENU: [
                 CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
+                CallbackQueryHandler(admin_add_cat_entry, pattern="^admin_add_cat$"),
+                CallbackQueryHandler(admin_add_item_entry, pattern="^admin_add_item$"),
+                CallbackQueryHandler(admin_desc_cat_entry, pattern="^admin_desc_cat$"),
+                CallbackQueryHandler(admin_desc_item_entry, pattern="^admin_desc_item$"),
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
             ],
+
+            # Price edit
             ADMIN_SELECT_CAT: [
-                CallbackQueryHandler(admin_choose_cat, pattern="^admin_cat_"),
+                CallbackQueryHandler(admin_choose_cat, pattern=r"^admin_cat_"),
                 CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
             ],
             ADMIN_SELECT_ITEM: [
-                CallbackQueryHandler(admin_choose_item, pattern="^admin_item_"),
-                CallbackQueryHandler(admin_choose_cat, pattern="^admin_cat_"),
+                CallbackQueryHandler(admin_choose_item, pattern=r"^admin_item_"),
+                CallbackQueryHandler(admin_choose_cat, pattern=r"^admin_cat_"),
                 CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
@@ -1335,8 +1672,71 @@ def build_application():
             ADMIN_PRICE_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, admin_price_input),
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
-                CallbackQueryHandler(admin_choose_cat, pattern="^admin_cat_"),
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+            ],
+
+            # Add category
+            ADMIN_ADD_CAT_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_cat_title),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+
+            # Add item flow
+            ADMIN_ADD_ITEM_CAT: [
+                CallbackQueryHandler(admin_add_item_choose_cat, pattern=r"^admin_add_item_cat_"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_ADD_ITEM_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_item_title),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_ADD_ITEM_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_item_price),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_ADD_ITEM_SID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_item_sid),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_ADD_ITEM_DESC: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_item_desc),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+
+            # Descriptions
+            ADMIN_DESC_MENU: [
+                CallbackQueryHandler(admin_desc_edit_cb, pattern="^admin_desc_edit$"),
+                CallbackQueryHandler(admin_desc_delete_cb, pattern="^admin_desc_delete$"),
+                CallbackQueryHandler(admin_desc_cat_entry, pattern="^admin_desc_cat$"),
+                CallbackQueryHandler(admin_desc_item_entry, pattern="^admin_desc_item$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+                # selection callbacks are routed through admin_choose_cat/item
+                CallbackQueryHandler(admin_choose_cat, pattern=r"^admin_desc_cat_"),
+                CallbackQueryHandler(admin_choose_item, pattern=r"^admin_desc_item_"),
+            ],
+            ADMIN_DESC_CAT_SELECT: [
+                CallbackQueryHandler(admin_choose_cat, pattern=r"^admin_desc_cat_"),
+                CallbackQueryHandler(admin_desc_cat_entry, pattern="^admin_desc_cat$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_DESC_ITEM_SELECT: [
+                CallbackQueryHandler(admin_choose_item, pattern=r"^admin_desc_item_"),
+                CallbackQueryHandler(admin_desc_item_entry, pattern="^admin_desc_item$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_DESC_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_desc_input),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
             ],
         },
         fallbacks=[CommandHandler("cancel", admin_cancel_cmd)],

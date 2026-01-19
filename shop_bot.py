@@ -1,7 +1,7 @@
 
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, json, asyncio, time, uuid
+import os, json, asyncio, time, uuid, re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -673,8 +673,181 @@ async def admin_add_item_desc(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_html(msg, disable_web_page_preview=True)
     return ADMIN_MENU
 
+
+# --------------------
+# Admin descriptions (categories / items)
+# --------------------
+
+async def admin_desc_cat_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry: choose a category to view/edit its description."""
+    q = update.callback_query
+    if q:
+        await q.answer()
+        uid = q.from_user.id
+    else:
+        uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if not cats:
+        await (q.message if q else update.message).reply_text('Категорий пока нет. Добавьте категорию в админке.')
+        return ADMIN_MENU
+
+    kb = _cat_buttons(cats, prefix='admin_desc_cat_', back_cb='admin_desc')
+    await (q.message if q else update.message).reply_html('📝 <b>Описания категорий</b>\n\nВыберите категорию:', reply_markup=kb)
+    return ADMIN_DESC_CAT_SELECT
+
+
+async def admin_desc_item_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry: choose a category, then choose an item to view/edit its description."""
+    q = update.callback_query
+    if q:
+        await q.answer()
+        uid = q.from_user.id
+    else:
+        uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if not cats:
+        await (q.message if q else update.message).reply_text('Категорий пока нет. Добавьте категорию в админке.')
+        return ADMIN_MENU
+
+    rows = []
+    for i, c in enumerate(cats):
+        rows.append([InlineKeyboardButton(c.get('title', f'Категория {i+1}'), callback_data=f"admin_desc_item_list_{i}")])
+    rows.append([InlineKeyboardButton('⬅️ Назад', callback_data='admin_desc')])
+    kb = InlineKeyboardMarkup(rows)
+    await (q.message if q else update.message).reply_html('📝 <b>Описания товаров</b>\n\nСначала выберите категорию:', reply_markup=kb)
+    return ADMIN_DESC_ITEM_SELECT
+
+
+async def admin_desc_item_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """After choosing a category, show its items for description editing."""
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    try:
+        cidx = int(q.data.split('_')[-1])
+    except Exception:
+        await q.message.reply_text('Ошибка выбора категории.')
+        return ADMIN_MENU
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if cidx < 0 or cidx >= len(cats):
+        await q.message.reply_text('Категория не найдена.')
+        return ADMIN_MENU
+
+    cat = cats[cidx]
+    items = cat.get('items', []) or []
+    if not items:
+        await q.message.reply_text('В этой категории нет товаров.')
+        return ADMIN_DESC_ITEM_SELECT
+
+    kb = _item_buttons(cat, cidx, prefix='admin_desc_item_', back_cb='admin_desc_item')
+    await q.message.reply_html(f"📝 <b>Описания товаров</b>\n\nКатегория: <b>{cat.get('title','Категория')}</b>\nВыберите товар:", reply_markup=kb)
+    return ADMIN_DESC_ITEM_SELECT
+
+
+async def admin_desc_menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if not _is_admin(uid):
+        return ConversationHandler.END
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton('🗂 Описание категории', callback_data='admin_desc_cat')],
+        [InlineKeyboardButton('📦 Описание товара', callback_data='admin_desc_item')],
+        [InlineKeyboardButton('⬅️ Назад', callback_data='admin')],
+        [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
+    ])
+    await q.message.reply_html('📝 <b>Описания</b>\n\nЧто редактируем?', reply_markup=kb)
+    return ADMIN_MENU
+
+
+async def admin_desc_edit_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    st = context.user_data.get('admin_desc') or {}
+    tgt = st.get('target')
+    if tgt not in ('category', 'item'):
+        await q.message.reply_text('Не удалось определить объект. Откройте /admin заново.')
+        return ConversationHandler.END
+
+    if tgt == 'category':
+        await q.message.reply_text('✏️ Введите новое описание категории одним сообщением:')
+    else:
+        await q.message.reply_text('✏️ Введите новое описание товара одним сообщением:')
+    context.user_data['admin_desc_mode'] = 'edit'
+    return ADMIN_DESC_INPUT
+
+
+async def admin_desc_delete_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    st = context.user_data.get('admin_desc') or {}
+    tgt = st.get('target')
+    cidx = int(st.get('cat_idx', -1))
+    iidx = int(st.get('item_idx', -1))
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if tgt == 'category' and 0 <= cidx < len(cats):
+        cats[cidx]['description'] = ''
+        _write_json(CATALOG_PATH, data)
+        await q.message.reply_text('🗑 Описание категории удалено.')
+        return ADMIN_MENU
+
     if tgt == 'item' and 0 <= cidx < len(cats):
-        items = cats[cidx].get('items', [])
+        items = cats[cidx].get('items', []) or []
+        if 0 <= iidx < len(items):
+            items[iidx]['description'] = ''
+            _write_json(CATALOG_PATH, data)
+            await q.message.reply_text('🗑 Описание товара удалено.')
+            return ADMIN_MENU
+
+    await q.message.reply_text('Не удалось удалить описание. Откройте /admin заново.')
+    return ConversationHandler.END
+
+
+async def admin_desc_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    desc = (update.message.text or '').strip()
+    st = context.user_data.get('admin_desc') or {}
+    tgt = st.get('target')
+    cidx = int(st.get('cat_idx', -1))
+    iidx = int(st.get('item_idx', -1))
+
+    data = load_catalog()
+    cats = data.get('categories', [])
+
+    if tgt == 'category' and 0 <= cidx < len(cats):
+        cats[cidx]['description'] = desc
+        _write_json(CATALOG_PATH, data)
+        await update.message.reply_text('✅ Описание категории обновлено.')
+        return ADMIN_MENU
+
+    if tgt == 'item' and 0 <= cidx < len(cats):
+        items = cats[cidx].get('items', []) or []
         if 0 <= iidx < len(items):
             items[iidx]['description'] = desc
             _write_json(CATALOG_PATH, data)
@@ -1649,6 +1822,7 @@ def build_application():
                 CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
                 CallbackQueryHandler(admin_add_cat_entry, pattern="^admin_add_cat$"),
                 CallbackQueryHandler(admin_add_item_entry, pattern="^admin_add_item$"),
+                CallbackQueryHandler(admin_desc_menu_cb, pattern="^admin_desc$"),
                 CallbackQueryHandler(admin_desc_cat_entry, pattern="^admin_desc_cat$"),
                 CallbackQueryHandler(admin_desc_item_entry, pattern="^admin_desc_item$"),
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
@@ -1713,6 +1887,7 @@ def build_application():
             ADMIN_DESC_MENU: [
                 CallbackQueryHandler(admin_desc_edit_cb, pattern="^admin_desc_edit$"),
                 CallbackQueryHandler(admin_desc_delete_cb, pattern="^admin_desc_delete$"),
+                CallbackQueryHandler(admin_desc_menu_cb, pattern="^admin_desc$"),
                 CallbackQueryHandler(admin_desc_cat_entry, pattern="^admin_desc_cat$"),
                 CallbackQueryHandler(admin_desc_item_entry, pattern="^admin_desc_item$"),
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
@@ -1720,6 +1895,7 @@ def build_application():
                 # selection callbacks are routed through admin_choose_cat/item
                 CallbackQueryHandler(admin_choose_cat, pattern=r"^admin_desc_cat_"),
                 CallbackQueryHandler(admin_choose_item, pattern=r"^admin_desc_item_"),
+                CallbackQueryHandler(admin_desc_item_list, pattern=r"^admin_desc_item_list_"),
             ],
             ADMIN_DESC_CAT_SELECT: [
                 CallbackQueryHandler(admin_choose_cat, pattern=r"^admin_desc_cat_"),
@@ -1729,6 +1905,7 @@ def build_application():
             ],
             ADMIN_DESC_ITEM_SELECT: [
                 CallbackQueryHandler(admin_choose_item, pattern=r"^admin_desc_item_"),
+                CallbackQueryHandler(admin_desc_item_list, pattern=r"^admin_desc_item_list_"),
                 CallbackQueryHandler(admin_desc_item_entry, pattern="^admin_desc_item$"),
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),

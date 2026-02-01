@@ -28,6 +28,8 @@ MAP_PATH = Path("config/service_map.json")
 BALANCES_FILE = Path("balances.json")
 ORDERS_FILE = Path("orders.json")
 INVOICES_FILE = Path("invoices.json")
+USERS_FILE = Path("users.json")
+EXPENSES_FILE = Path("expenses.json")
 
 PROMO_CODES_PATH = Path("config/promo_codes.json")
 PROMO_USES_FILE = Path("promo_uses.json")
@@ -116,6 +118,54 @@ def confirm_invoice(invoice_id: str) -> dict|None:
             return inv
     return None
 
+def _load_users() -> dict:
+    return _read_json(USERS_FILE, {"users": []})
+
+def _save_users(data: dict):
+    _write_json(USERS_FILE, data)
+
+def remember_user(user_id: int):
+    """Store user_id for broadcasts/stats. Safe to call often."""
+    try:
+        uid = int(user_id)
+    except Exception:
+        return
+    data = _load_users()
+    lst = data.setdefault("users", [])
+    if uid not in lst:
+        lst.append(uid)
+        _save_users(data)
+
+def get_all_user_ids() -> List[int]:
+    """Best-effort list of known users (users.json + balances/orders/invoices)."""
+    ids = set()
+    try:
+        for uid in (_load_users().get("users") or []):
+            try: ids.add(int(uid))
+            except Exception: pass
+    except Exception:
+        pass
+
+    for row in (_read_json(BALANCES_FILE, []) or []):
+        if isinstance(row, dict) and "user_id" in row:
+            try: ids.add(int(row["user_id"]))
+            except Exception: pass
+
+    for inv in (_read_json(INVOICES_FILE, []) or []):
+        if isinstance(inv, dict) and "user_id" in inv:
+            try: ids.add(int(inv["user_id"]))
+            except Exception: pass
+
+    for o in (_read_json(ORDERS_FILE, []) or []):
+        if isinstance(o, dict) and "user_id" in o:
+            try: ids.add(int(o["user_id"]))
+            except Exception: pass
+
+    ids.discard(0)
+    return sorted(ids)
+
+
+
 
 def _load_promo_codes() -> dict:
     return _read_json(PROMO_CODES_PATH, {})
@@ -174,7 +224,7 @@ def apply_discount(cost: float, percent: int) -> float:
 # - Add / edit / delete descriptions for categories and items
 # --------------------
 
-ADMIN_MENU, ADMIN_SELECT_CAT, ADMIN_SELECT_ITEM, ADMIN_PRICE_INPUT, ADMIN_ADD_CAT_TITLE, ADMIN_ADD_ITEM_CAT, ADMIN_ADD_ITEM_TITLE, ADMIN_ADD_ITEM_PRICE, ADMIN_ADD_ITEM_SID, ADMIN_ADD_ITEM_DESC, ADMIN_DESC_MENU, ADMIN_DESC_CAT_SELECT, ADMIN_DESC_ITEM_SELECT, ADMIN_DESC_INPUT = range(20, 34)
+ADMIN_MENU, ADMIN_SELECT_CAT, ADMIN_SELECT_ITEM, ADMIN_PRICE_INPUT, ADMIN_ADD_CAT_TITLE, ADMIN_ADD_ITEM_CAT, ADMIN_ADD_ITEM_TITLE, ADMIN_ADD_ITEM_PRICE, ADMIN_ADD_ITEM_SUPPLIER, ADMIN_ADD_ITEM_SID, ADMIN_ADD_ITEM_DESC, ADMIN_DESC_MENU, ADMIN_DESC_CAT_SELECT, ADMIN_DESC_ITEM_SELECT, ADMIN_DESC_INPUT, ADMIN_DELETE_MENU, ADMIN_DELETE_CAT_SELECT, ADMIN_DELETE_ITEM_CAT, ADMIN_DELETE_ITEM_SELECT, ADMIN_DELETE_CONFIRM, ADMIN_BROADCAST_TEXT, ADMIN_STATS_MENU, ADMIN_EXPENSE_ADD_AMOUNT, ADMIN_EXPENSE_ADD_NOTE = range(20, 44)
 
 
 def _is_admin(uid: int) -> bool:
@@ -203,6 +253,9 @@ def _admin_kb_main() -> InlineKeyboardMarkup:
         [InlineKeyboardButton('💲 Изменить цену товара', callback_data='admin_price')],
         [InlineKeyboardButton('➕ Добавить категорию', callback_data='admin_add_cat')],
         [InlineKeyboardButton('➕ Добавить товар', callback_data='admin_add_item')],
+        [InlineKeyboardButton('🗑 Удаление', callback_data='admin_delete')],
+        [InlineKeyboardButton('📣 Рассылка', callback_data='admin_broadcast')],
+        [InlineKeyboardButton('📊 Финансы', callback_data='admin_stats')],
         [InlineKeyboardButton('📝 Описания', callback_data='admin_desc')],
         [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
     ])
@@ -605,9 +658,34 @@ async def admin_add_item_price(update: Update, context: ContextTypes.DEFAULT_TYP
     st['price'] = float(value)
     context.user_data['admin_new_item'] = st
 
-    await update.message.reply_text('Введите <b>ID услуги у поставщика</b> (service_id). Только число:', parse_mode=ParseMode.HTML)
-    return ADMIN_ADD_ITEM_SID
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ Да, это накрутка (есть service_id)', callback_data='admin_add_item_supplier_yes')],
+        [InlineKeyboardButton('❌ Нет, свой товар/услуга (без service_id)', callback_data='admin_add_item_supplier_no')],
+    ])
+    await update.message.reply_html('Товар связан с поставщиком накрутки (нужен <code>service_id</code>)?', reply_markup=kb)
+    return ADMIN_ADD_ITEM_SUPPLIER
 
+
+async def admin_add_item_supplier_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+
+    st = context.user_data.get('admin_new_item') or {}
+
+    if q.data.endswith('_yes'):
+        st['use_supplier'] = True
+        context.user_data['admin_new_item'] = st
+        await q.message.reply_text('Введите <b>ID услуги у поставщика</b> (service_id). Только число:', parse_mode=ParseMode.HTML)
+        return ADMIN_ADD_ITEM_SID
+
+    # no supplier
+    st['use_supplier'] = False
+    st['service_id'] = None
+    context.user_data['admin_new_item'] = st
+    await q.message.reply_text('📝 Введите описание товара одним сообщением.\nЕсли описание не нужно — отправьте <code>skip</code>.', parse_mode=ParseMode.HTML)
+    return ADMIN_ADD_ITEM_DESC
 
 async def admin_add_item_sid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id if update.effective_user else 0
@@ -669,10 +747,299 @@ async def admin_add_item_desc(update: Update, context: ContextTypes.DEFAULT_TYPE
        f"Категория: <b>{cat.get('title','Категория')}</b>\n"
        f"Товар: <b>{title}</b>\n"
        f"Цена в боте (x{mult:g}): <b>{shown}</b>\n"
-       f"Service ID: <code>{int(service_id)}</code>")
+       f"Service ID: <code>{int(service_id)}</code>" if service_id is not None else "Service ID: <i>нет</i>")
     await update.message.reply_html(msg, disable_web_page_preview=True)
     return ADMIN_MENU
 
+
+# ----- Deletion / Broadcast / Finance -----
+
+def _expense_rows() -> List[dict]:
+    return _read_json(EXPENSES_FILE, [])
+
+def add_expense(amount: float, note: str = "") -> dict:
+    row = {"amount": float(amount), "note": note, "created_at": int(time.time())}
+    rows = _expense_rows()
+    rows.append(row)
+    _write_json(EXPENSES_FILE, rows)
+    return row
+
+def _sum_by_period(rows: List[dict], ts_field: str, now_ts: int) -> Dict[str, float]:
+    # periods: day(24h), week(7d), month(30d) rolling windows
+    periods = {"day": 86400, "week": 7*86400, "month": 30*86400}
+    out = {k: 0.0 for k in periods}
+    for r in rows:
+        try:
+            ts = int(r.get(ts_field) or 0)
+        except Exception:
+            continue
+        for k, secs in periods.items():
+            if ts and (now_ts - ts) <= secs:
+                try:
+                    if "amount" in r:
+                        out[k] += float(r.get("amount") or 0)
+                    elif "sum" in r:
+                        out[k] += float(r.get("sum") or 0)
+                except Exception:
+                    pass
+    return out
+
+def _finance_snapshot() -> Dict[str, Dict[str, float]]:
+    now_ts = int(time.time())
+    invs = [i for i in (_read_json(INVOICES_FILE, []) or []) if isinstance(i, dict) and i.get("status") == "paid"]
+    # revenue is paid invoices amount by paid_at
+    rev_rows = [{"amount": float(i.get("amount") or 0), "paid_at": int(i.get("paid_at") or 0)} for i in invs]
+    rev = _sum_by_period(rev_rows, "paid_at", now_ts)
+
+    exp_rows = [{"amount": float(e.get("amount") or 0), "created_at": int(e.get("created_at") or 0)} for e in (_expense_rows() or []) if isinstance(e, dict)]
+    exp = _sum_by_period(exp_rows, "created_at", now_ts)
+
+    prof = {k: float(rev.get(k, 0.0)) - float(exp.get(k, 0.0)) for k in ("day", "week", "month")}
+    return {"revenue": rev, "expenses": exp, "profit": prof}
+
+async def admin_delete_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton('🗂 Удалить категорию', callback_data='admin_del_cat')],
+        [InlineKeyboardButton('📦 Удалить товар', callback_data='admin_del_item')],
+        [InlineKeyboardButton('⬅️ Назад', callback_data='admin')],
+        [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
+    ])
+    await q.message.reply_html('🗑 <b>Удаление</b>\n\nЧто удаляем?', reply_markup=kb)
+    return ADMIN_DELETE_MENU
+
+async def admin_del_cat_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if not cats:
+        await q.message.reply_text('Категорий пока нет.')
+        return ADMIN_MENU
+    await q.message.reply_html('🗂 Выберите категорию для удаления:', reply_markup=_cat_buttons(cats, 'admin_del_cat_', 'admin_delete'))
+    return ADMIN_DELETE_CAT_SELECT
+
+async def admin_del_cat_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    data = load_catalog()
+    cats = data.get('categories', [])
+    try:
+        cidx = int(q.data.split('_')[-1])
+    except Exception:
+        return ADMIN_MENU
+    if not (0 <= cidx < len(cats)):
+        await q.message.reply_text('Категория не найдена.')
+        return ADMIN_MENU
+    context.user_data['admin_delete'] = {"target": "category", "cat_idx": cidx}
+    title = cats[cidx].get("title", "Категория")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ Да, удалить', callback_data='admin_del_confirm')],
+        [InlineKeyboardButton('❌ Отмена', callback_data='admin_delete')],
+    ])
+    await q.message.reply_html(f"⚠️ Удалить категорию <b>{title}</b>?\n\nВсе товары внутри тоже удалятся.", reply_markup=kb)
+    return ADMIN_DELETE_CONFIRM
+
+async def admin_del_item_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    data = load_catalog()
+    cats = data.get('categories', [])
+    if not cats:
+        await q.message.reply_text('Категорий пока нет.')
+        return ADMIN_MENU
+    await q.message.reply_html('📦 Выберите категорию:', reply_markup=_cat_buttons(cats, 'admin_del_item_cat_', 'admin_delete'))
+    return ADMIN_DELETE_ITEM_CAT
+
+async def admin_del_item_choose_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    data = load_catalog()
+    cats = data.get('categories', [])
+    try:
+        cidx = int(q.data.split('_')[-1])
+    except Exception:
+        return ADMIN_MENU
+    if not (0 <= cidx < len(cats)):
+        await q.message.reply_text('Категория не найдена.')
+        return ADMIN_MENU
+    cat = cats[cidx]
+    items = cat.get("items", []) or []
+    if not items:
+        await q.message.reply_text('В этой категории нет товаров.')
+        return ADMIN_DELETE_MENU
+    rows = []
+    for i, it in enumerate(items):
+        rows.append([InlineKeyboardButton(it.get("title", f"Товар {i+1}"), callback_data=f"admin_del_item_{cidx}_{i}")])
+    rows.append([InlineKeyboardButton('⬅️ Назад', callback_data='admin_delete')])
+    await q.message.reply_html('📦 Выберите товар для удаления:', reply_markup=InlineKeyboardMarkup(rows))
+    return ADMIN_DELETE_ITEM_SELECT
+
+async def admin_del_item_choose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    data = load_catalog()
+    cats = data.get('categories', [])
+    try:
+        _, _, _, cidx_s, iidx_s = q.data.split('_')
+        cidx = int(cidx_s); iidx = int(iidx_s)
+    except Exception:
+        return ADMIN_MENU
+    if not (0 <= cidx < len(cats)):
+        return ADMIN_MENU
+    items = cats[cidx].get("items", []) or []
+    if not (0 <= iidx < len(items)):
+        return ADMIN_MENU
+    context.user_data['admin_delete'] = {"target": "item", "cat_idx": cidx, "item_idx": iidx}
+    title = items[iidx].get("title", "Товар")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ Да, удалить', callback_data='admin_del_confirm')],
+        [InlineKeyboardButton('❌ Отмена', callback_data='admin_delete')],
+    ])
+    await q.message.reply_html(f"⚠️ Удалить товар <b>{title}</b>?", reply_markup=kb)
+    return ADMIN_DELETE_CONFIRM
+
+async def admin_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+
+    st = context.user_data.get("admin_delete") or {}
+    tgt = st.get("target")
+    data = load_catalog()
+    cats = data.get("categories", [])
+
+    if tgt == "category":
+        cidx = int(st.get("cat_idx", -1))
+        if 0 <= cidx < len(cats):
+            title = cats[cidx].get("title", "Категория")
+            del cats[cidx]
+            data["categories"] = cats
+            _write_json(CATALOG_PATH, data)
+            await q.message.reply_html(f"✅ Категория <b>{title}</b> удалена.")
+            return ADMIN_MENU
+
+    if tgt == "item":
+        cidx = int(st.get("cat_idx", -1))
+        iidx = int(st.get("item_idx", -1))
+        if 0 <= cidx < len(cats):
+            items = cats[cidx].get("items", []) or []
+            if 0 <= iidx < len(items):
+                title = items[iidx].get("title", "Товар")
+                del items[iidx]
+                cats[cidx]["items"] = items
+                _write_json(CATALOG_PATH, data)
+                await q.message.reply_html(f"✅ Товар <b>{title}</b> удалён.")
+                return ADMIN_MENU
+
+    await q.message.reply_text("Не удалось удалить. Откройте /admin заново.")
+    return ConversationHandler.END
+
+async def admin_broadcast_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    await q.message.reply_html("📣 <b>Рассылка</b>\n\nОтправьте текст рассылки одним сообщением.\nПоддерживается HTML (как в боте).")
+    return ADMIN_BROADCAST_TEXT
+
+async def admin_broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    text = update.message.text or ""
+    user_ids = get_all_user_ids()
+    ok = 0; fail = 0
+    for i, chat_id in enumerate(user_ids):
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+            ok += 1
+        except Exception:
+            fail += 1
+        # gentle rate limit
+        if (i + 1) % 20 == 0:
+            await asyncio.sleep(0.6)
+
+    await update.message.reply_html(f"✅ Рассылка завершена.\n\nОтправлено: <b>{ok}</b>\nОшибки: <b>{fail}</b>")
+    return ADMIN_MENU
+
+async def admin_stats_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+
+    snap = _finance_snapshot()
+    rev = snap["revenue"]; exp = snap["expenses"]; prof = snap["profit"]
+
+    msg = (
+        f"📊 <b>Финансы (rolling)</b>\n\n"
+        f"💰 Выручка:\n• День: <b>{rev['day']:.2f} ₽</b>\n• Неделя: <b>{rev['week']:.2f} ₽</b>\n• Месяц: <b>{rev['month']:.2f} ₽</b>\n\n"
+        f"🧾 Расходы:\n• День: <b>{exp['day']:.2f} ₽</b>\n• Неделя: <b>{exp['week']:.2f} ₽</b>\n• Месяц: <b>{exp['month']:.2f} ₽</b>\n\n"
+        f"📈 Чистая прибыль:\n• День: <b>{prof['day']:.2f} ₽</b>\n• Неделя: <b>{prof['week']:.2f} ₽</b>\n• Месяц: <b>{prof['month']:.2f} ₽</b>"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton('➕ Добавить расход', callback_data='admin_exp_add')],
+        [InlineKeyboardButton('⬅️ Назад', callback_data='admin')],
+        [InlineKeyboardButton('❌ Выйти', callback_data='admin_cancel')],
+    ])
+    await q.message.reply_html(msg, reply_markup=kb)
+    return ADMIN_STATS_MENU
+
+async def admin_expense_add_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not _is_admin(q.from_user.id):
+        return ConversationHandler.END
+    await q.message.reply_html("🧾 Введите сумму расхода (например: <code>199</code> или <code>199.50</code>):")
+    return ADMIN_EXPENSE_ADD_AMOUNT
+
+async def admin_expense_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    raw = (update.message.text or "").strip().replace(",", ".")
+    try:
+        amount = float(raw)
+        if amount <= 0:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text("Сумма должна быть положительным числом. Пример: 199 или 199.50")
+        return ADMIN_EXPENSE_ADD_AMOUNT
+
+    context.user_data["admin_exp_amount"] = float(amount)
+    await update.message.reply_html("Добавьте комментарий/причину (или отправьте <code>skip</code>):")
+    return ADMIN_EXPENSE_ADD_NOTE
+
+async def admin_expense_add_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(uid):
+        return ConversationHandler.END
+
+    note = (update.message.text or "").strip()
+    if note.lower() == "skip":
+        note = ""
+    amount = float(context.user_data.get("admin_exp_amount") or 0)
+    add_expense(amount, note)
+    await update.message.reply_html("✅ Расход добавлен.")
+    return ADMIN_MENU
 
 # --------------------
 # Admin descriptions (categories / items)
@@ -912,6 +1279,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     chat_id = update.effective_chat.id
+    remember_user(update.effective_user.id)
 
     # 1) отправляем картинку (если файл есть в проекте)
     image_paths = [
@@ -1822,6 +2190,9 @@ def build_application():
                 CallbackQueryHandler(admin_price_entry, pattern="^admin_price$"),
                 CallbackQueryHandler(admin_add_cat_entry, pattern="^admin_add_cat$"),
                 CallbackQueryHandler(admin_add_item_entry, pattern="^admin_add_item$"),
+                CallbackQueryHandler(admin_delete_entry, pattern="^admin_delete$"),
+                CallbackQueryHandler(admin_broadcast_entry, pattern="^admin_broadcast$"),
+                CallbackQueryHandler(admin_stats_entry, pattern="^admin_stats$"),
                 CallbackQueryHandler(admin_desc_menu_cb, pattern="^admin_desc$"),
                 CallbackQueryHandler(admin_desc_cat_entry, pattern="^admin_desc_cat$"),
                 CallbackQueryHandler(admin_desc_item_entry, pattern="^admin_desc_item$"),
@@ -1872,6 +2243,12 @@ def build_application():
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
             ],
+
+            ADMIN_ADD_ITEM_SUPPLIER: [
+                CallbackQueryHandler(admin_add_item_supplier_choose, pattern=r"^admin_add_item_supplier_"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
             ADMIN_ADD_ITEM_SID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_item_sid),
                 CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
@@ -1883,6 +2260,60 @@ def build_application():
                 CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
             ],
 
+
+            # Delete / Broadcast / Finance
+            ADMIN_DELETE_MENU: [
+                CallbackQueryHandler(admin_del_cat_entry, pattern="^admin_del_cat$"),
+                CallbackQueryHandler(admin_del_item_entry, pattern="^admin_del_item$"),
+                CallbackQueryHandler(admin_delete_entry, pattern="^admin_delete$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_DELETE_CAT_SELECT: [
+                CallbackQueryHandler(admin_del_cat_choose, pattern=r"^admin_del_cat_"),
+                CallbackQueryHandler(admin_delete_entry, pattern="^admin_delete$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_DELETE_ITEM_CAT: [
+                CallbackQueryHandler(admin_del_item_choose_cat, pattern=r"^admin_del_item_cat_"),
+                CallbackQueryHandler(admin_delete_entry, pattern="^admin_delete$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_DELETE_ITEM_SELECT: [
+                CallbackQueryHandler(admin_del_item_choose, pattern=r"^admin_del_item_\d+_\d+$"),
+                CallbackQueryHandler(admin_delete_entry, pattern="^admin_delete$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_DELETE_CONFIRM: [
+                CallbackQueryHandler(admin_delete_confirm, pattern="^admin_del_confirm$"),
+                CallbackQueryHandler(admin_delete_entry, pattern="^admin_delete$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_BROADCAST_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_text),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_STATS_MENU: [
+                CallbackQueryHandler(admin_expense_add_entry, pattern="^admin_exp_add$"),
+                CallbackQueryHandler(admin_stats_entry, pattern="^admin_stats$"),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_EXPENSE_ADD_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_expense_add_amount),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
+            ADMIN_EXPENSE_ADD_NOTE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_expense_add_note),
+                CallbackQueryHandler(admin_menu_cb, pattern="^admin$"),
+                CallbackQueryHandler(admin_cancel_cb, pattern="^admin_cancel$"),
+            ],
             # Descriptions
             ADMIN_DESC_MENU: [
                 CallbackQueryHandler(admin_desc_edit_cb, pattern="^admin_desc_edit$"),
